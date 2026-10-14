@@ -1,0 +1,65 @@
+name: Build & Release Windows Desktop App
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: Build Next.js
+        run: |
+          npm run build
+
+      - name: Package Electron Installer with electron-builder
+        run: |
+          npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Locate Generated Installer
+        id: locate-installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "dist-electron" -Filter "*.exe" -Recurse | Select-Object -First 1
+          if ($installer) {
+            echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+            Write-Host "Found installer at: $($installer.FullName)"
+          } else {
+            Write-Host "No installer found"
+          }
+
+      - name: Create GitHub Release with Desktop Installer
+        if: steps.locate-installer.outputs.installer_path != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Claude Enterprise Desktop Windows v1.0.${{ github.run_number }}"
+          body: |
+            ## 💻 Claude Enterprise Desktop App Update (Windows)
+            
+            - **Build Number**: ${{ github.run_number }}
+            - **Commit**: ${{ github.sha }}
+            - Download and run the attached installer `.exe` below to upgrade your Desktop Workspace.
+          files: ${{ steps.locate-installer.outputs.installer_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

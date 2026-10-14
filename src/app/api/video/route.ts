@@ -1,0 +1,133 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const execFileAsync = promisify(execFile);
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+const VIDEO_CACHE_DIR = path.join(process.cwd(), 'public', 'generated_videos');
+
+function isAllowedSource(rawUrl: string): boolean {
+  try {
+    const url = new URL(String(rawUrl || '').trim());
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    return new Set([
+      'youtube.com',
+      'youtu.be',
+      'youtube-nocookie.com',
+      'instagram.com',
+      'facebook.com',
+      'fb.watch',
+    ]).has(host) || host.endsWith('.youtube.com') || host.endsWith('.instagram.com') || host.endsWith('.facebook.com');
+  } catch {
+    return false;
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { action, videoUrl, faceImageUrl, platform = 'youtube', title, description } = body;
+
+    if (!fs.existsSync(VIDEO_CACHE_DIR)) {
+      try {
+        fs.mkdirSync(VIDEO_CACHE_DIR, { recursive: true });
+      } catch (e) {}
+    }
+
+    if (action === 'download_reel') {
+      if (!videoUrl) {
+        return NextResponse.json({ error: 'videoUrl is required' }, { status: 400 });
+      }
+      if (!isAllowedSource(String(videoUrl))) {
+        return NextResponse.json(
+          { success: false, error: 'Only HTTPS URLs from YouTube, Instagram, or Facebook are permitted for reel downloads.' },
+          { status: 400 }
+        );
+      }
+      if (process.env.VERCEL) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Reel download is not available in this serverless deployment.',
+            hint: 'Use a dedicated media worker/object-storage backend for persistent video downloads.'
+          },
+          { status: 503 }
+        );
+      }
+
+      const videoId = `reel_${Date.now()}`;
+      const outputPath = path.join(VIDEO_CACHE_DIR, `${videoId}.mp4`);
+
+      // Attempt download with yt-dlp if available
+      try {
+        await execFileAsync('yt-dlp', [
+          '-f',
+          'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+          '--no-warnings',
+          '-o',
+          outputPath,
+          String(videoUrl),
+        ], {
+          timeout: 30000,
+          maxBuffer: 1024 * 1024 * 4,
+        });
+
+        return NextResponse.json({
+          success: true,
+          videoId,
+          videoPath: `/generated_videos/${videoId}.mp4`,
+          message: 'Trending Reel downloaded in high resolution (1080p)',
+        });
+      } catch (dlErr: any) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: dlErr?.message || 'yt-dlp is not installed or the source could not be downloaded.',
+            hint: 'Install yt-dlp on the execution host and ensure the supplied URL is permitted and accessible.',
+          },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (action === 'face_swap') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Face-swap execution is not configured on this deployment.',
+          hint: 'Configure a real video-processing provider and model endpoint before using this operation.',
+          received: {
+            videoUrl: Boolean(videoUrl),
+            faceImageUrl: Boolean(faceImageUrl),
+            platform,
+          },
+        },
+        { status: 501 }
+      );
+    }
+
+    if (action === 'syndicate') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Publishing is not available through this endpoint until a real platform connector is configured.',
+          hint: 'Enable the target platform connector and use its authenticated upload/publish action.',
+          platform,
+          title: title || null,
+          description: description || null,
+        },
+        { status: 501 }
+      );
+    }
+
+    return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
