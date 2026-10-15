@@ -1,9 +1,23 @@
 const { app, BrowserWindow, shell, Menu, Tray, nativeImage, ipcMain, dialog, globalShortcut, Notification, powerSaveBlocker, session, WebContentsView, BrowserView } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 // Enable remote debugging port for CDP / Playwright AI agent control
-app.commandLine.appendSwitch("remote-debugging-port", "9222");
+app.commandLine.appendSwitch("remote-debugging-port", "9224");
+app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+
+const crashLogPath = path.join(app.getPath("userData"), "crash.log");
+
+process.on("uncaughtException", (err) => {
+  try { fs.appendFileSync(crashLogPath, "UNCAUGHT: " + (err?.stack || err) + "\n"); } catch(e){}
+});
+process.on("unhandledRejection", (reason) => {
+  try { fs.appendFileSync(crashLogPath, "REJECTION: " + String(reason) + "\n"); } catch(e){}
+});
+app.on("before-quit", () => {
+  try { fs.appendFileSync(crashLogPath, "app before-quit fired!\n"); } catch(e){}
+});
 
 const APP_URL = "https://claude-enterprise-app.vercel.app";
 const isDev = process.argv.includes("--dev");
@@ -21,8 +35,7 @@ function createWindow() {
     title: "Sameer AI Workspace",
     backgroundColor: "#1c1b18",
     frame: true,
-    show: false,
-    icon: path.join(__dirname, "icon.png"),
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -33,9 +46,13 @@ function createWindow() {
 
   mainWindow.loadURL(LOAD_URL);
 
+  mainWindow.webContents.on("did-fail-load", (_e, code, desc) => {
+    try { fs.appendFileSync("C:\\Users\\Master\\sameer workspace\\crash.log", `FAIL_LOAD: ${code} ${desc}\n`); } catch(e){}
+  });
+
   mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    mainWindow.focus();
+    mainWindow?.show();
+    mainWindow?.focus();
   });
 
   mainWindow.on("resize", () => {
@@ -373,7 +390,7 @@ ipcMain.handle("execute-code", async (event, { code, language = "python" }) => {
       return { success: false, stdout: "", stderr: "Unsupported language for native execution: " + safeLanguage, exitCode: 1, executionTimeMs: Date.now() - startTime };
     }
 
-    const workspaceDir = "C:\\Users\\Master\\sameer workspace";
+    const workspaceDir = path.join(os.homedir(), "sameer workspace");
     const nodeModulesDir = path.join(workspaceDir, "node_modules");
     const nodePath = process.env.NODE_PATH ? `${process.env.NODE_PATH};${nodeModulesDir}` : nodeModulesDir;
 
@@ -408,9 +425,10 @@ ipcMain.handle("execute-code", async (event, { code, language = "python" }) => {
 ipcMain.handle("launch-external-browser", async () => {
   try {
     const { spawn } = require("child_process");
-    const script = "C:\\Users\\Master\\sameer workspace\\browser\\browser_start.mjs";
+    const browserDir = path.join(os.homedir(), "sameer workspace", "browser");
+    const script = path.join(browserDir, "browser_start.mjs");
     const child = spawn("node", [script], {
-      cwd: "C:\\Users\\Master\\sameer workspace\\browser",
+      cwd: browserDir,
       detached: true,
       stdio: "ignore",
       windowsHide: false,
