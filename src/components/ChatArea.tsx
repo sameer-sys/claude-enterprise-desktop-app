@@ -126,15 +126,37 @@ export default function ChatArea({
   const [isBrowserMode, setIsBrowserMode] = useState<boolean>(false);
   const [updateInfo, setUpdateInfo] = useState<{ hasUpdate: boolean; latestVersion?: string; downloadUrl?: string; releaseNotes?: string } | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
-    fetch('/api/check-update')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.hasUpdate) setUpdateInfo(data);
-      })
-      .catch(() => {});
+    const check = () => {
+      fetch('/api/check-update')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.hasUpdate) setUpdateInfo(data);
+        })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleRestartToUpdate = async () => {
+    setIsUpdating(true);
+    try {
+      if (typeof window !== 'undefined' && (window as any).electronAPI?.restartToUpdate) {
+        await (window as any).electronAPI.restartToUpdate(updateInfo?.downloadUrl);
+      } else if (updateInfo?.downloadUrl) {
+        window.open(updateInfo.downloadUrl, '_blank');
+      }
+    } catch (err) {
+      console.error('Update failed:', err);
+      if (updateInfo?.downloadUrl) window.open(updateInfo.downloadUrl, '_blank');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   // Downside Per-Session Connector Quick Edit State
   const [editingDownsideConn, setEditingDownsideConn] = useState<Connector | null>(null);
@@ -887,31 +909,18 @@ export default function ChatArea({
             <span className="hidden sm:inline">Export</span>
           </button>
 
-          {/* IN-APP DESKTOP UPDATE / INSTALL UPGRADE BUTTON */}
-          <button
-            onClick={() => {
-              if (updateInfo?.downloadUrl) {
-                window.open(updateInfo.downloadUrl, '_blank');
-              } else {
-                setIsCheckingUpdate(true);
-                fetch('/api/check-update')
-                  .then((res) => res.json())
-                  .then((data) => {
-                    setUpdateInfo(data);
-                    if (data?.downloadUrl) window.open(data.downloadUrl, '_blank');
-                  })
-                  .finally(() => setIsCheckingUpdate(false));
-              }
-            }}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500/20 to-emerald-500/10 hover:from-emerald-500/30 hover:to-emerald-500/20 border border-emerald-500/30 text-xs font-semibold text-emerald-300 transition-all active:scale-95 shadow-sm"
-            title="Check and install the latest Windows Desktop update"
-          >
-            <Download className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Install Update</span>
-            {updateInfo?.hasUpdate && (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-          </button>
+          {/* RESTART TO UPDATE PILL (ANTIGRAVITY STYLE) */}
+          {updateInfo?.hasUpdate && (
+            <button
+              onClick={handleRestartToUpdate}
+              disabled={isUpdating}
+              className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-[#0284c7] hover:bg-[#0369a1] active:bg-[#075985] text-white text-xs font-semibold shadow-md transition-all active:scale-95 animate-pulse"
+              title="Restart and update to the latest version"
+            >
+              <span>{isUpdating ? 'Updating...' : 'Restart to Update'}</span>
+              <span className="font-bold">→</span>
+            </button>
+          )}
 
           {/* OPENWORK CLOUD WEBSITE */}
           <a

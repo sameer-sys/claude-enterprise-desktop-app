@@ -51,6 +51,30 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     // The manager is constructed before app.whenReady(). Only acquire the
     // Electron session when creating a tab, after native window setup.
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+      // Clean Google Chrome User Agent to bypass Google/GitHub/Twitter/Microsoft login blocks
+      const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+      try { browserSession.setUserAgent(CHROME_USER_AGENT); } catch (e) {}
+      try {
+        browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+          const requestHeaders = { ...details.requestHeaders };
+          requestHeaders['User-Agent'] = CHROME_USER_AGENT;
+          callback({ requestHeaders });
+        });
+      } catch (e) {}
+      try {
+        browserSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
+          const responseHeaders = { ...details.responseHeaders };
+          for (const key of Object.keys(responseHeaders)) {
+            const lowerKey = key.toLowerCase();
+            if (lowerKey === 'x-frame-options') delete responseHeaders[key];
+            if (lowerKey === 'content-security-policy') {
+              responseHeaders[key] = responseHeaders[key].map((csp) => csp.replace(/frame-ancestors[^;]+;?/gi, ''));
+            }
+          }
+          callback({ responseHeaders });
+        });
+      } catch (e) {}
+
     browserSession.on("will-download", (_event, item, contents) => {
       const tab = [...browserTabs.values()].find((candidate) => candidate.view.webContents === contents);
       if (!tab) return;

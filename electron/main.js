@@ -235,6 +235,50 @@ ipcMain.handle("execute-code", async (event, { code, language = "python" }) => {
   }
 });
 
+// Automatic Native In-App Updater & Restart
+ipcMain.handle("restart-to-update", async (event, { downloadUrl } = {}) => {
+  try {
+    const https = require("https");
+    const { spawn } = require("child_process");
+    const targetUrl = downloadUrl || "https://github.com/sameer-sys/claude-enterprise-desktop-app/releases/latest/download/Sameer.AI.Workspace.Setup.1.0.0.exe";
+    const tempExe = path.join(app.getPath("temp"), `Sameer-AI-Workspace-Update-${Date.now()}.exe`);
+    
+    const fileStream = fs.createWriteStream(tempExe);
+    
+    const download = (url) => new Promise((resolve, reject) => {
+      https.get(url, (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          return download(response.headers.location).then(resolve).catch(reject);
+        }
+        if (response.statusCode !== 200) {
+          return reject(new Error(`Download failed with HTTP ${response.statusCode}`));
+        }
+        response.pipe(fileStream);
+        fileStream.on("finish", () => {
+          fileStream.close();
+          resolve(tempExe);
+        });
+      }).on("error", (err) => {
+        try { fs.unlinkSync(tempExe); } catch (e) {}
+        reject(err);
+      });
+    });
+
+    await download(targetUrl);
+
+    // Launch installer and cleanly exit current process
+    const child = spawn(tempExe, [], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    app.quit();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
+  }
+});
+
 // App menu
 function buildMenu() {
   const template = [

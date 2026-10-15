@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startAutomation: () => ipcRenderer.invoke('start-automation'),
   stopAutomation: () => ipcRenderer.invoke('stop-automation'),
 
+  // Native In-App Auto-Update & Restart
+  restartToUpdate: (downloadUrl) => ipcRenderer.invoke('restart-to-update', { downloadUrl }),
+
   // OpenWork Native Browser Control
   browser: {
     show: (bounds, sessionId) => ipcRenderer.invoke('openwork:browser:show', bounds, sessionId),
