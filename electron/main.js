@@ -47,7 +47,7 @@ function createWindow() {
   mainWindow.loadURL(LOAD_URL);
 
   mainWindow.webContents.on("did-fail-load", (_e, code, desc) => {
-    try { fs.appendFileSync("C:\\Users\\Master\\sameer workspace\\crash.log", `FAIL_LOAD: ${code} ${desc}\n`); } catch(e){}
+    try { fs.appendFileSync(crashLogPath, `FAIL_LOAD: ${code} ${desc}\n`); } catch(e){}
   });
 
   mainWindow.once("ready-to-show", () => {
