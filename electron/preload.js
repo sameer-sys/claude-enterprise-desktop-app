@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Native In-App Auto-Update & Restart
   restartToUpdate: (downloadUrl) => ipcRenderer.invoke('restart-to-update', { downloadUrl }),
 
+  // Launch Real External Chrome Browser
+  launchExternalBrowser: () => ipcRenderer.invoke('launch-external-browser'),
+
   // OpenWork Native Browser Control
   browser: {
     show: (bounds, sessionId) => ipcRenderer.invoke('openwork:browser:show', bounds, sessionId),
@@ -35,6 +38,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createTab: (url, sessionId) => ipcRenderer.invoke('openwork:browser:createTab', url, sessionId),
     closeTab: (tabId) => ipcRenderer.invoke('openwork:browser:closeTab', tabId),
     selectTab: (tabId) => ipcRenderer.invoke('openwork:browser:selectTab', tabId),
+    onNavigated: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on('openwork:browser:navigated', handler);
+      return () => ipcRenderer.removeListener('openwork:browser:navigated', handler);
+    },
+    onTitleUpdated: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on('openwork:browser:title', handler);
+      return () => ipcRenderer.removeListener('openwork:browser:title', handler);
+    },
+    onBoundsInvalidated: (callback) => {
+      const handler = () => callback();
+      ipcRenderer.on('openwork:browser:bounds-invalidated', handler);
+      return () => ipcRenderer.removeListener('openwork:browser:bounds-invalidated', handler);
+    },
   },
 });
 

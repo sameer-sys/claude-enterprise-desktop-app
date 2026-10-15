@@ -1,6 +1,9 @@
-const { app, BrowserWindow, shell, Menu, Tray, nativeImage, ipcMain, dialog, globalShortcut, Notification, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, shell, Menu, Tray, nativeImage, ipcMain, dialog, globalShortcut, Notification, powerSaveBlocker, session, WebContentsView, BrowserView } = require("electron");
 const path = require("path");
 const fs = require("fs");
+
+// Enable remote debugging port for CDP / Playwright AI agent control
+app.commandLine.appendSwitch("remote-debugging-port", "9222");
 
 const APP_URL = "https://claude-enterprise-app.vercel.app";
 const isDev = process.argv.includes("--dev");
@@ -35,6 +38,10 @@ function createWindow() {
     mainWindow.focus();
   });
 
+  mainWindow.on("resize", () => {
+    mainWindow?.webContents.send("openwork:browser:bounds-invalidated");
+  });
+
   // Strip X-Frame-Options and Content-Security-Policy frame-ancestors
   // so the embedded Browser panel loads YouTube, GitHub, Instagram, etc. without a white screen!
   mainWindow.webContents.session.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
@@ -53,24 +60,182 @@ function createWindow() {
     callback({ responseHeaders });
   });
 
-  // Initialize OpenWork Native BrowserPanel
-  try {
-    import('./browser-panel.mjs').then(({ createBrowserPanel }) => {
-      createBrowserPanel({
-        getWindow: () => mainWindow,
-        remoteDebugPort: 9222,
-        showNativeContextMenu: () => {},
-        closeNativeContextMenu: () => {},
-        onDeepLink: () => {},
-        checkPolicy: async () => {},
+  // OpenWork Native Browser Control (Embedded WebContentsView / BrowserView)
+  let browserViewInstance = null;
+  let currentBrowserUrl = "https://github.com";
+
+  function getOrCreateBrowserView() {
+    if (browserViewInstance && !browserViewInstance.webContents.isDestroyed()) {
+      return browserViewInstance;
+    }
+
+    const viewOptions = {
+      webPreferences: {
+        partition: "persist:sameer-browser",
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+      },
+    };
+
+    if (typeof WebContentsView !== "undefined") {
+      browserViewInstance = new WebContentsView(viewOptions);
+    } else {
+      browserViewInstance = new BrowserView(viewOptions);
+    }
+
+    const contents = browserViewInstance.webContents;
+
+    contents.on("did-navigate", (_event, url) => {
+      currentBrowserUrl = url;
+      mainWindow?.webContents.send("openwork:browser:navigated", {
+        url,
+        title: contents.getTitle(),
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
       });
-      console.log('OpenWork Native BrowserPanel initialized successfully!');
-    }).catch((err) => {
-      console.error('Failed to initialize OpenWork BrowserPanel:', err);
     });
-  } catch (err) {
-    console.error('Error loading browser-panel:', err);
+
+    contents.on("did-navigate-in-page", (_event, url) => {
+      currentBrowserUrl = url;
+      mainWindow?.webContents.send("openwork:browser:navigated", {
+        url,
+        title: contents.getTitle(),
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
+      });
+    });
+
+    contents.on("page-title-updated", (_event, title) => {
+      mainWindow?.webContents.send("openwork:browser:title", {
+        title,
+        url: contents.getURL(),
+      });
+    });
+
+    contents.loadURL(currentBrowserUrl);
+    return browserViewInstance;
   }
+
+  function attachBrowserView(bounds) {
+    if (!mainWindow || mainWindow.isDestroyed() || !bounds) return false;
+    const view = getOrCreateBrowserView();
+
+    const zoomFactor = mainWindow.webContents.getZoomFactor() || 1;
+    const x = Math.round(bounds.x * zoomFactor);
+    const y = Math.round(bounds.y * zoomFactor);
+    const width = Math.round(bounds.width * zoomFactor);
+    const height = Math.round(bounds.height * zoomFactor);
+
+    if (typeof WebContentsView !== "undefined" && mainWindow.contentView) {
+      if (!mainWindow.contentView.children.includes(view)) {
+        mainWindow.contentView.addChildView(view);
+      }
+      view.setBounds({ x, y, width, height });
+      view.setVisible(true);
+    } else if (mainWindow.setBrowserView) {
+      mainWindow.setBrowserView(view);
+      view.setBounds({ x, y, width, height });
+      view.setAutoResize({ width: true, height: true });
+    }
+
+    return true;
+  }
+
+  function hideBrowserView() {
+    if (!mainWindow || mainWindow.isDestroyed() || !browserViewInstance) return false;
+    if (typeof WebContentsView !== "undefined" && mainWindow.contentView) {
+      browserViewInstance.setVisible(false);
+      if (mainWindow.contentView.children.includes(browserViewInstance)) {
+        mainWindow.contentView.removeChildView(browserViewInstance);
+      }
+    } else if (mainWindow.removeBrowserView) {
+      mainWindow.removeBrowserView(browserViewInstance);
+    }
+    return true;
+  }
+
+  function setBrowserBounds(bounds) {
+    if (!mainWindow || mainWindow.isDestroyed() || !browserViewInstance || !bounds) return false;
+    const zoomFactor = mainWindow.webContents.getZoomFactor() || 1;
+    const x = Math.round(bounds.x * zoomFactor);
+    const y = Math.round(bounds.y * zoomFactor);
+    const width = Math.round(bounds.width * zoomFactor);
+    const height = Math.round(bounds.height * zoomFactor);
+    browserViewInstance.setBounds({ x, y, width, height });
+    return true;
+  }
+
+  // Register OpenWork IPC Handlers
+  ipcMain.removeHandler("openwork:browser:show");
+  ipcMain.handle("openwork:browser:show", (_event, bounds) => {
+    return attachBrowserView(bounds);
+  });
+
+  ipcMain.removeHandler("openwork:browser:hide");
+  ipcMain.handle("openwork:browser:hide", () => {
+    return hideBrowserView();
+  });
+
+  ipcMain.removeHandler("openwork:browser:bounds");
+  ipcMain.handle("openwork:browser:bounds", (_event, bounds) => {
+    return setBrowserBounds(bounds);
+  });
+
+  ipcMain.removeHandler("openwork:browser:navigate");
+  ipcMain.handle("openwork:browser:navigate", (_event, url) => {
+    const view = getOrCreateBrowserView();
+    const target = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    currentBrowserUrl = target;
+    view.webContents.loadURL(target);
+    return { success: true, url: target };
+  });
+
+  ipcMain.removeHandler("openwork:browser:back");
+  ipcMain.handle("openwork:browser:back", () => {
+    if (browserViewInstance && !browserViewInstance.webContents.isDestroyed()) {
+      if (browserViewInstance.webContents.canGoBack()) {
+        browserViewInstance.webContents.goBack();
+      }
+    }
+    return true;
+  });
+
+  ipcMain.removeHandler("openwork:browser:forward");
+  ipcMain.handle("openwork:browser:forward", () => {
+    if (browserViewInstance && !browserViewInstance.webContents.isDestroyed()) {
+      if (browserViewInstance.webContents.canGoForward()) {
+        browserViewInstance.webContents.goForward();
+      }
+    }
+    return true;
+  });
+
+  ipcMain.removeHandler("openwork:browser:reload");
+  ipcMain.handle("openwork:browser:reload", () => {
+    if (browserViewInstance && !browserViewInstance.webContents.isDestroyed()) {
+      browserViewInstance.webContents.reload();
+    }
+    return true;
+  });
+
+  ipcMain.removeHandler("openwork:browser:state");
+  ipcMain.handle("openwork:browser:state", () => {
+    if (!browserViewInstance || browserViewInstance.webContents.isDestroyed()) {
+      return { isAttached: false, url: currentBrowserUrl, title: "" };
+    }
+    const contents = browserViewInstance.webContents;
+    return {
+      isAttached: true,
+      url: contents.getURL() || currentBrowserUrl,
+      title: contents.getTitle(),
+      canGoBack: contents.canGoBack(),
+      canGoForward: contents.canGoForward(),
+      isLoading: contents.isLoading(),
+    };
+  });
 
   // Open external links in real browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -208,14 +373,18 @@ ipcMain.handle("execute-code", async (event, { code, language = "python" }) => {
       return { success: false, stdout: "", stderr: "Unsupported language for native execution: " + safeLanguage, exitCode: 1, executionTimeMs: Date.now() - startTime };
     }
 
+    const workspaceDir = "C:\\Users\\Master\\sameer workspace";
+    const nodeModulesDir = path.join(workspaceDir, "node_modules");
+    const nodePath = process.env.NODE_PATH ? `${process.env.NODE_PATH};${nodeModulesDir}` : nodeModulesDir;
+
     const result = await new Promise((resolve) => {
       const { exec } = require("child_process");
       exec(cmd, {
-        cwd: process.env.USER_WORKSPACE || app.getPath("documents"),
+        cwd: workspaceDir,
         timeout: 45000,
         maxBuffer: 10 * 1024 * 1024,
-        windowsHide: true,
-        env: { ...process.env, PYTHONUNBUFFERED: "1" }
+        windowsHide: false,
+        env: { ...process.env, PYTHONUNBUFFERED: "1", NODE_PATH: nodePath }
       }, (error, stdout, stderr) => {
         resolve({
           success: !error,
@@ -232,6 +401,24 @@ ipcMain.handle("execute-code", async (event, { code, language = "python" }) => {
     if (tempFilePath) {
       try { fs.unlinkSync(tempFilePath); } catch (e) {}
     }
+  }
+});
+
+// Launch Real External Chrome Browser
+ipcMain.handle("launch-external-browser", async () => {
+  try {
+    const { spawn } = require("child_process");
+    const script = "C:\\Users\\Master\\sameer workspace\\browser\\browser_start.mjs";
+    const child = spawn("node", [script], {
+      cwd: "C:\\Users\\Master\\sameer workspace\\browser",
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    child.unref();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
   }
 });
 
