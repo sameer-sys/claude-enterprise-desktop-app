@@ -1,0 +1,39 @@
+{
+  "name": "@openwork/desktop",
+  "private": true,
+  "version": "0.18.57",
+  "desktopName": "com.differentai.openwork",
+  "description": "OpenWork desktop shell",
+  "author": {
+    "name": "OpenWork",
+    "email": "support@openworklabs.com"
+  },
+  "main": "electron/main.mjs",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opencode-ai/sdk": "^1.18.15",
+    "@openwork/browser-tabs": "workspace:*",
+    "@openwork/enterprise-mcp-client": "workspace:*",
+    "@openwork/headless-threads": "workspace:*",
+    "@openwork/paths": "workspace:*",
+    "@openwork/free-auto": "workspace:*",
+    "@openwork/types": "workspace:*",
+    "@sentry/electron": "^7.16.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "better-sqlite3": "^13.0.2",
+    "drizzle-orm": "^0.45.2",
+    "electron-updater": "^6.3.9",
+    "htmlparser2": "8.0.2",
+    "jsonc-parser": "^3.2.1",
+    "minimatch": "^10.2.5",
+    "node-pty": "npm:@lydell/node-pty@1.2.0-beta.12",
+    "undici": "6.28.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.3.6"
+  },
+  "packageManager": "pnpm@10.27.0",
+  "openworkDistribution": "cloud"
+}

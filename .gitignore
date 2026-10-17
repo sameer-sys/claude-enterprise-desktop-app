@@ -5,3 +5,5 @@ dist-electron/
 .env*.local
 .DS_Store
 *.log
+openwork-core/sidecars/*.exe
+*.exe

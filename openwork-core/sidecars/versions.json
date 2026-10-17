@@ -1,0 +1,14 @@
+{
+  "opencode2": {
+    "version": "0.0.0-beta-19086",
+    "sha256": "d3e291b55fbd79303285b6f05a271cec994b87e2849e9fc78966994e46aff366"
+  },
+  "opencode": {
+    "version": "1.18.30",
+    "sha256": "17aea6d895c750ad5008df2395c5ae85353bd03a62ffc698ec040ef6dfea4115"
+  },
+  "openwork-server": {
+    "version": "0.18.57",
+    "sha256": "in-process"
+  }
+}
