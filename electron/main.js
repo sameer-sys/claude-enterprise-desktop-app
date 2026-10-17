@@ -2,6 +2,7 @@ const { app, BrowserWindow, shell, Menu, Tray, nativeImage, ipcMain, dialog, glo
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { claudeMcpManager } = require("./claude-desktop-mcp.cjs");
 
 // Enable remote debugging port for CDP / Playwright AI agent control
 app.commandLine.appendSwitch("remote-debugging-port", "9224");
@@ -252,6 +253,157 @@ function createWindow() {
       canGoForward: contents.canGoForward(),
       isLoading: contents.isLoading(),
     };
+  });
+
+  // WebMCP Browser Automation: Observe, Click, Type, Screenshot
+  ipcMain.removeHandler("openwork:browser:observe");
+  ipcMain.handle("openwork:browser:observe", async () => {
+    if (!browserViewInstance || browserViewInstance.webContents.isDestroyed()) {
+      return { success: false, error: "Browser view not active or open" };
+    }
+    try {
+      const contents = browserViewInstance.webContents;
+      const observation = await contents.executeJavaScript(`(() => {
+        const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+        const elements = [];
+        for (let i = 0; i < candidates.length && elements.length < 100; i++) {
+          const el = candidates[i];
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+          const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+          elements.push({
+            ref: 'e' + (elements.length + 1),
+            tag: el.tagName.toLowerCase(),
+            type: el.type || undefined,
+            name: label.slice(0, 150),
+            href: el.href || undefined,
+            disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2),
+          });
+        }
+        return {
+          title: document.title,
+          url: window.location.href,
+          textSnippet: (document.body ? document.body.innerText : '').slice(0, 4000),
+          elements,
+        };
+      })()`);
+      return { success: true, ...observation };
+    } catch (e) {
+      return { success: false, error: e?.message || "Failed to observe browser page" };
+    }
+  });
+
+  ipcMain.removeHandler("openwork:browser:click");
+  ipcMain.handle("openwork:browser:click", async (_event, params = {}) => {
+    if (!browserViewInstance || browserViewInstance.webContents.isDestroyed()) {
+      return { success: false, error: "Browser view not active" };
+    }
+    try {
+      const contents = browserViewInstance.webContents;
+      const targetRef = params.ref || null;
+      const selector = params.selector || null;
+      const res = await contents.executeJavaScript(`(() => {
+        let el = null;
+        if (${JSON.stringify(selector)}) {
+          el = document.querySelector(${JSON.stringify(selector)});
+        } else if (${JSON.stringify(targetRef)}) {
+          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"]'));
+          const visible = candidates.filter(item => {
+            const r = item.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          const idx = parseInt(String(${JSON.stringify(targetRef)}).replace(/^e/i, '')) - 1;
+          el = visible[idx];
+        }
+        if (el) {
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          el.focus();
+          el.click();
+          return { success: true, clicked: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').slice(0, 60) };
+        }
+        return { success: false, error: "Element not found" };
+      })()`);
+      return res;
+    } catch (e) {
+      return { success: false, error: e?.message || "Click failed" };
+    }
+  });
+
+  ipcMain.removeHandler("openwork:browser:type");
+  ipcMain.handle("openwork:browser:type", async (_event, params = {}) => {
+    if (!browserViewInstance || browserViewInstance.webContents.isDestroyed()) {
+      return { success: false, error: "Browser view not active" };
+    }
+    try {
+      const contents = browserViewInstance.webContents;
+      const targetRef = params.ref || null;
+      const selector = params.selector || null;
+      const text = params.text || "";
+      const res = await contents.executeJavaScript(`(() => {
+        let el = null;
+        if (${JSON.stringify(selector)}) {
+          el = document.querySelector(${JSON.stringify(selector)});
+        } else if (${JSON.stringify(targetRef)}) {
+          const candidates = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]'));
+          const idx = parseInt(String(${JSON.stringify(targetRef)}).replace(/^e/i, '')) - 1;
+          el = candidates[idx] || document.querySelector('input, textarea');
+        } else {
+          el = document.activeElement || document.querySelector('input, textarea');
+        }
+        if (el) {
+          el.focus();
+          if (el.value !== undefined) {
+            el.value = ${JSON.stringify(text)};
+          } else if (el.isContentEditable) {
+            el.innerText = ${JSON.stringify(text)};
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, typed: ${JSON.stringify(text)} };
+        }
+        return { success: false, error: "No input element found to type into" };
+      })()`);
+      return res;
+    } catch (e) {
+      return { success: false, error: e?.message || "Type failed" };
+    }
+  });
+
+  ipcMain.removeHandler("openwork:browser:screenshot");
+  ipcMain.handle("openwork:browser:screenshot", async () => {
+    if (!browserViewInstance || browserViewInstance.webContents.isDestroyed()) {
+      return { success: false, error: "Browser view not active" };
+    }
+    try {
+      const image = await browserViewInstance.webContents.capturePage();
+      return { success: true, dataUrl: image.toDataURL() };
+    } catch (e) {
+      return { success: false, error: e?.message || "Screenshot failed" };
+    }
+  });
+
+  // Claude Desktop Local MCP IPC Handlers
+  ipcMain.removeHandler("openwork:mcp:list-claude-desktop");
+  ipcMain.handle("openwork:mcp:list-claude-desktop", async () => {
+    try {
+      const tools = await claudeMcpManager.listAllTools();
+      return { success: true, tools };
+    } catch (e) {
+      return { success: false, error: e?.message || "Failed to list Claude Desktop MCP tools", tools: [] };
+    }
+  });
+
+  ipcMain.removeHandler("openwork:mcp:call-claude-desktop");
+  ipcMain.handle("openwork:mcp:call-claude-desktop", async (_event, { serverName, toolName, args }) => {
+    try {
+      const result = await claudeMcpManager.callTool(serverName, toolName, args);
+      return { success: true, result };
+    } catch (e) {
+      return { success: false, error: e?.message || "Failed to call Claude Desktop MCP tool" };
+    }
   });
 
   // Open external links in real browser

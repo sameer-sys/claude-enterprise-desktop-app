@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reload: () => ipcRenderer.invoke('openwork:browser:reload'),
     bounds: (bounds) => ipcRenderer.invoke('openwork:browser:bounds', bounds),
     getState: () => ipcRenderer.invoke('openwork:browser:state'),
+    observe: () => ipcRenderer.invoke('openwork:browser:observe'),
+    click: (params) => ipcRenderer.invoke('openwork:browser:click', params),
+    type: (params) => ipcRenderer.invoke('openwork:browser:type', params),
+    screenshot: () => ipcRenderer.invoke('openwork:browser:screenshot'),
     createTab: (url, sessionId) => ipcRenderer.invoke('openwork:browser:createTab', url, sessionId),
     closeTab: (tabId) => ipcRenderer.invoke('openwork:browser:closeTab', tabId),
     selectTab: (tabId) => ipcRenderer.invoke('openwork:browser:selectTab', tabId),
@@ -53,6 +57,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('openwork:browser:bounds-invalidated', handler);
       return () => ipcRenderer.removeListener('openwork:browser:bounds-invalidated', handler);
     },
+  },
+
+  // Claude Desktop Local MCP (tools from %APPDATA%\Claude\claude_desktop_config.json)
+  claudeDesktopMcp: {
+    listTools: () => ipcRenderer.invoke('openwork:mcp:list-claude-desktop'),
+    callTool: (serverName, toolName, args) => ipcRenderer.invoke('openwork:mcp:call-claude-desktop', { serverName, toolName, args }),
   },
 });
 
