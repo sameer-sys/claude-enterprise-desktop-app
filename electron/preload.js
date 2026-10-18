@@ -57,7 +57,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('openwork:browser:bounds-invalidated', handler);
       return () => ipcRenderer.removeListener('openwork:browser:bounds-invalidated', handler);
     },
+    onOpenPanel: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on('openwork:browser:open-panel', handler);
+      return () => ipcRenderer.removeListener('openwork:browser:open-panel', handler);
+    },
   },
+
+  // OpenWork Local Tool Execution Bridge (Browser, Shell, Filesystem, Claude Desktop)
+  executeLocalTool: (name, args) => ipcRenderer.invoke('openwork:local:execute-tool', { name, args }),
+  getLocalTools: () => ipcRenderer.invoke('openwork:local:get-tools'),
 
   // Claude Desktop Local MCP (tools from %APPDATA%\Claude\claude_desktop_config.json)
   claudeDesktopMcp: {

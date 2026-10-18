@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { claudeMcpManager } = require("./claude-desktop-mcp.cjs");
+const { LocalBridgeServer } = require("./local-bridge.cjs");
 
 // Enable remote debugging port for CDP / Playwright AI agent control
 app.commandLine.appendSwitch("remote-debugging-port", "9224");
@@ -26,6 +27,9 @@ const LOAD_URL = isDev ? "http://localhost:3000" : APP_URL;
 
 let mainWindow = null;
 let tray = null;
+let browserViewInstance = null;
+let currentBrowserUrl = "https://github.com";
+let localBridge = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -79,9 +83,6 @@ function createWindow() {
   });
 
   // OpenWork Native Browser Control (Embedded WebContentsView / BrowserView)
-  let browserViewInstance = null;
-  let currentBrowserUrl = "https://github.com";
-
   function getOrCreateBrowserView() {
     if (browserViewInstance && !browserViewInstance.webContents.isDestroyed()) {
       return browserViewInstance;
@@ -406,6 +407,28 @@ function createWindow() {
     }
   });
 
+  // Local Bridge Native IPC (Browser, Terminal, Filesystem, Claude Desktop MCP)
+  ipcMain.removeHandler("openwork:local:execute-tool");
+  ipcMain.handle("openwork:local:execute-tool", async (_event, { name, args }) => {
+    if (!localBridge) return { success: false, error: "Local bridge not initialized" };
+    try {
+      const result = await localBridge.executeTool(name, args || {});
+      return { success: true, result };
+    } catch (e) {
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  ipcMain.removeHandler("openwork:local:get-tools");
+  ipcMain.handle("openwork:local:get-tools", async () => {
+    try {
+      const claudeTools = await claudeMcpManager.listAllTools();
+      return { success: true, tools: claudeTools };
+    } catch (e) {
+      return { success: false, error: e?.message || String(e), tools: [] };
+    }
+  });
+
   // Open external links in real browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -676,6 +699,19 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
   createTray();
+
+  // Initialize OpenWork Local Bridge Server on 127.0.0.1:48080
+  try {
+    localBridge = new LocalBridgeServer({
+      getMainWindow: () => mainWindow,
+      getBrowserView: () => browserViewInstance,
+      claudeMcpManager,
+      sidecarPath: path.join(__dirname, "../openwork-core/sidecars/opencode.exe"),
+    });
+    localBridge.start(48080);
+  } catch (err) {
+    console.error("[LocalBridge] Failed to initialize:", err);
+  }
 
   // Global shortcut: Ctrl+Shift+Space to show/hide
   globalShortcut.register("CmdOrCtrl+Shift+Space", () => {
