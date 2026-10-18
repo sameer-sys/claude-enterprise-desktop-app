@@ -67,19 +67,26 @@ function createWindow() {
   // Strip X-Frame-Options and Content-Security-Policy frame-ancestors
   // so the embedded Browser panel loads YouTube, GitHub, Instagram, etc. without a white screen!
   mainWindow.webContents.session.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
-    const responseHeaders = { ...details.responseHeaders };
-    for (const key of Object.keys(responseHeaders)) {
-      const lowerKey = key.toLowerCase();
-      if (lowerKey === 'x-frame-options') {
-        delete responseHeaders[key];
+    try {
+      const responseHeaders = { ...details.responseHeaders };
+      for (const key of Object.keys(responseHeaders)) {
+        const lowerKey = key.toLowerCase();
+        if (lowerKey === 'x-frame-options') {
+          delete responseHeaders[key];
+        }
+        if (lowerKey === 'content-security-policy') {
+          const val = responseHeaders[key];
+          if (Array.isArray(val)) {
+            responseHeaders[key] = val.map((csp) => typeof csp === 'string' ? csp.replace(/frame-ancestors[^;]+;?/gi, '') : csp);
+          } else if (typeof val === 'string') {
+            responseHeaders[key] = val.replace(/frame-ancestors[^;]+;?/gi, '');
+          }
+        }
       }
-      if (lowerKey === 'content-security-policy') {
-        responseHeaders[key] = responseHeaders[key].map((csp) =>
-          csp.replace(/frame-ancestors[^;]+;?/gi, '')
-        );
-      }
+      callback({ responseHeaders });
+    } catch (e) {
+      callback({ responseHeaders: details.responseHeaders });
     }
-    callback({ responseHeaders });
   });
 
   // OpenWork Native Browser Control (Embedded WebContentsView / BrowserView)
@@ -696,9 +703,13 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  try { fs.appendFileSync(crashLogPath, "whenReady fired\n"); } catch(e){}
   buildMenu();
+  try { fs.appendFileSync(crashLogPath, "buildMenu done\n"); } catch(e){}
   createWindow();
+  try { fs.appendFileSync(crashLogPath, "createWindow done\n"); } catch(e){}
   createTray();
+  try { fs.appendFileSync(crashLogPath, "createTray done\n"); } catch(e){}
 
   // Initialize OpenWork Local Bridge Server on 127.0.0.1:48080
   try {
@@ -709,19 +720,22 @@ app.whenReady().then(() => {
       sidecarPath: path.join(__dirname, "../openwork-core/sidecars/opencode.exe"),
     });
     localBridge.start(48080);
+    try { fs.appendFileSync(crashLogPath, "localBridge.start called\n"); } catch(e){}
   } catch (err) {
-    console.error("[LocalBridge] Failed to initialize:", err);
+    try { fs.appendFileSync(crashLogPath, "localBridge ERR: " + err.message + "\n"); } catch(e){}
   }
 
   // Global shortcut: Ctrl+Shift+Space to show/hide
-  globalShortcut.register("CmdOrCtrl+Shift+Space", () => {
-    if (mainWindow?.isVisible()) {
-      mainWindow.hide();
-    } else {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
-  });
+  try {
+    globalShortcut.register("CmdOrCtrl+Shift+Space", () => {
+      if (mainWindow?.isVisible()) {
+        mainWindow.hide();
+      } else {
+        mainWindow?.show();
+        mainWindow?.focus();
+      }
+    });
+  } catch (e) {}
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -730,10 +744,12 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  try { fs.appendFileSync(crashLogPath, "will-quit fired\n"); } catch(e){}
   globalShortcut.unregisterAll();
 });
 
 app.on("window-all-closed", () => {
+  try { fs.appendFileSync(crashLogPath, `window-all-closed fired (tray: ${Boolean(tray)})\n`); } catch(e){}
   if (process.platform !== "darwin" && !tray) app.quit();
 });
 

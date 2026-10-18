@@ -8,8 +8,9 @@ class LocalBridgeServer {
   constructor({ getMainWindow, getBrowserView, claudeMcpManager, sidecarPath }) {
     this.getMainWindow = getMainWindow;
     this.getBrowserView = getBrowserView;
-    this.claudeMcpManager = claudeMcpManager;
-    this.sidecarPath = sidecarPath || path.join(__dirname, '../openwork-core/sidecars/opencode.exe');
+    const candidatePath = sidecarPath || path.join(__dirname, '../openwork-core/sidecars/opencode.exe');
+    const fallbackPath = path.join(os.homedir(), 'sameer workspace', 'projects', 'claude-enterprise-desktop-app', 'openwork-core', 'sidecars', 'opencode.exe');
+    this.sidecarPath = fs.existsSync(candidatePath) ? candidatePath : fallbackPath;
     this.server = null;
     this.port = 48080;
     this.sidecarProcess = null;
@@ -166,17 +167,17 @@ class LocalBridgeServer {
       res.end(JSON.stringify({ error: 'Endpoint not found' }));
     });
 
+    const logFile = path.join(os.homedir(), 'AppData', 'Roaming', 'sameer-ai-workspace', 'crash.log');
     this.server.on('error', (err) => {
+      try { fs.appendFileSync(logFile, `[LocalBridge] Server ERR: ${err.message}\n`); } catch(e){}
       if (err.code === 'EADDRINUSE') {
-        console.warn(`[LocalBridge] Port ${this.port} busy, trying port ${this.port + 1}`);
+        try { this.server.close(); } catch(e){}
         this.start(this.port + 1);
-      } else {
-        console.error('[LocalBridge] Server error:', err);
       }
     });
 
     this.server.listen(this.port, '127.0.0.1', () => {
-      console.log(`[LocalBridge] Server running at http://127.0.0.1:${this.port}`);
+      try { fs.appendFileSync(logFile, `[LocalBridge] Listening on 127.0.0.1:${this.port}\n`); } catch(e){}
     });
   }
 
