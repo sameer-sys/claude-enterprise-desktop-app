@@ -8,6 +8,7 @@ class LocalBridgeServer {
   constructor({ getMainWindow, getBrowserView, claudeMcpManager, sidecarPath }) {
     this.getMainWindow = getMainWindow;
     this.getBrowserView = getBrowserView;
+    this.claudeMcpManager = claudeMcpManager;
     const candidatePath = sidecarPath || path.join(__dirname, '../openwork-core/sidecars/opencode.exe');
     const fallbackPath = path.join(os.homedir(), 'sameer workspace', 'projects', 'claude-enterprise-desktop-app', 'openwork-core', 'sidecars', 'opencode.exe');
     this.sidecarPath = fs.existsSync(candidatePath) ? candidatePath : fallbackPath;
