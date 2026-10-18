@@ -149,7 +149,115 @@ class LocalBridgeServer {
         return;
       }
 
-      // 4. Sidecar Start/Stop
+      // 4. Eval Script in Desktop Window
+      if (req.method === 'POST' && url.pathname === '/api/eval') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => {
+          try {
+            const { script } = JSON.parse(body || '{}');
+            const mainWindow = this.getMainWindow ? this.getMainWindow() : null;
+            if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Main window is not available');
+            const result = await mainWindow.webContents.executeJavaScript(script);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, result }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: err.message }));
+          }
+        });
+        return;
+      }
+
+      // 5. Dynamic Connector Registration (Connect ANY MCP Server on the fly)
+      if (req.method === 'POST' && url.pathname === '/api/connectors/add') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => {
+          try {
+            const { name, command, args = [], env = {} } = JSON.parse(body || '{}');
+            if (!name || !command) throw new Error('name and command are required');
+            const configPath = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json');
+            let config = { mcpServers: {} };
+            if (fs.existsSync(configPath)) {
+              try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+            }
+            config.mcpServers = config.mcpServers || {};
+            config.mcpServers[name] = { command, args, env };
+            fs.mkdirSync(path.dirname(configPath), { recursive: true });
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+            const tools = this.claudeMcpManager ? await this.claudeMcpManager.listAllTools() : [];
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, message: `Connector "${name}" added successfully`, toolsCount: tools.length }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: err.message }));
+          }
+        });
+        return;
+      }
+
+      // 6. Type Message into Chat UI
+      if (req.method === 'POST' && url.pathname === '/api/type-message') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => {
+          try {
+            const { text } = JSON.parse(body || '{}');
+            const mainWindow = this.getMainWindow ? this.getMainWindow() : null;
+            if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Main window not available');
+            const resData = await mainWindow.webContents.executeJavaScript(`(() => {
+              const textarea = document.querySelector('textarea');
+              if (!textarea) return { success: false, error: 'Chat input textarea not found' };
+              textarea.focus();
+              const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+              nativeInputValueSetter.call(textarea, ${JSON.stringify(text)});
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              textarea.dispatchEvent(new Event('change', { bubbles: true }));
+              const buttons = Array.from(document.querySelectorAll('button'));
+              const sendBtn = buttons.find(b => !b.disabled && (b.getAttribute('aria-label') === 'Send' || b.className.includes('bg-') || b.type === 'submit')) || buttons.reverse().find(b => !b.disabled);
+              if (sendBtn) {
+                sendBtn.click();
+                return { success: true, message: 'Message typed and Send clicked', text: ${JSON.stringify(text)} };
+              }
+              textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              return { success: true, message: 'Message typed, Enter dispatched', text: ${JSON.stringify(text)} };
+            })()`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, ...resData }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: err.message }));
+          }
+        });
+        return;
+      }
+
+      // 7. Read Chat Messages from UI
+      if (req.method === 'GET' && url.pathname === '/api/read-chat') {
+        try {
+          const mainWindow = this.getMainWindow ? this.getMainWindow() : null;
+          if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Main window not available');
+          const messages = await mainWindow.webContents.executeJavaScript(`(() => {
+            const articles = Array.from(document.querySelectorAll('[class*="prose"], [class*="message"], [class*="bubble"]'));
+            const samples = articles.slice(-6).map(el => (el.innerText || '').trim()).filter(Boolean);
+            return {
+              title: document.title,
+              url: window.location.href,
+              sampleTexts: samples,
+              bodySnippet: (document.body ? document.body.innerText : '').slice(-1500)
+            };
+          })()`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, ...messages }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+        return;
+      }
+
+      // 8. Sidecar Start/Stop
       if (req.method === 'POST' && url.pathname === '/api/sidecar/start') {
         const result = this.startSidecar();
         res.writeHead(200, { 'Content-Type': 'application/json' });
