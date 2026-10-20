@@ -433,7 +433,8 @@ class LocalBridgeServer {
       if (!command) throw new Error('No command provided');
 
       return new Promise((resolve) => {
-        exec(command, { cwd, timeout: 60000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
+        exec(command, { cwd, shell, timeout: 60000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
           if (err) {
             resolve(`Error (exit code ${err.code || 1}):\n${stderr || err.message}\n${stdout}`);
           } else {
