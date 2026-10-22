@@ -870,6 +870,51 @@ class LocalBridgeServer {
       return `Requested navigation to ${normalized} (UI panel notified)`;
     }
 
+    // A2. Browser Fill Login / Credentials
+    if (name === 'browser_fill_login') {
+      if (!browserView || browserView.webContents.isDestroyed()) {
+        throw new Error('Browser view not active');
+      }
+      const email = String(args.email || args.username || '');
+      const password = String(args.password || '');
+      const submit = args.submit !== false;
+
+      const fillRes = await browserView.webContents.executeJavaScript(`(() => {
+        const userInput = document.querySelector('input[name="login"], #login_field, input[type="email"], input[name="email"], input[name="username"], input[name="user[login]"], input[type="text"]');
+        const passInput = document.querySelector('input[name="password"], #password, input[type="password"]');
+        let filledUser = false;
+        let filledPass = false;
+
+        if (userInput && ${JSON.stringify(email)}) {
+          userInput.focus();
+          userInput.value = ${JSON.stringify(email)};
+          userInput.dispatchEvent(new Event('input', { bubbles: true }));
+          userInput.dispatchEvent(new Event('change', { bubbles: true }));
+          filledUser = true;
+        }
+
+        if (passInput && ${JSON.stringify(password)}) {
+          passInput.focus();
+          passInput.value = ${JSON.stringify(password)};
+          passInput.dispatchEvent(new Event('input', { bubbles: true }));
+          passInput.dispatchEvent(new Event('change', { bubbles: true }));
+          filledPass = true;
+        }
+
+        if (${submit} && (filledUser || filledPass)) {
+          const submitBtn = document.querySelector('input[type="submit"], button[type="submit"], [name="commit"], button.btn-primary');
+          if (submitBtn) {
+            setTimeout(() => submitBtn.click(), 600);
+            return { success: true, submitted: true, filledUser, filledPass };
+          }
+        }
+        return { success: true, submitted: false, filledUser, filledPass };
+      })()`);
+
+      return `Credential fill result: ${JSON.stringify(fillRes)}`;
+    }
+
+
     // B. Browser Observation
     if (name === 'browser_observe') {
       if (!browserView || browserView.webContents.isDestroyed()) {
