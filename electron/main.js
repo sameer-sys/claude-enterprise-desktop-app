@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, Tray, nativeImage, ipcMain, dialog, globalShortcut, Notification, powerSaveBlocker, session, WebContentsView, BrowserView } = require("electron");
+const { app, BrowserWindow, shell, Menu, MenuItem, Tray, nativeImage, ipcMain, dialog, globalShortcut, Notification, powerSaveBlocker, session, WebContentsView, BrowserView } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -31,10 +31,45 @@ let browserViewInstance = null;
 let currentBrowserUrl = "https://github.com";
 let localBridge = null;
 
+const windowStateFile = path.join(app.getPath("userData"), "window-state.json");
+function loadWindowState() {
+  try {
+    if (fs.existsSync(windowStateFile)) {
+      return JSON.parse(fs.readFileSync(windowStateFile, "utf8"));
+    }
+  } catch (e) {}
+  return { width: 1400, height: 900, isMaximized: false };
+}
+
+let saveWindowStateTimer = null;
+function saveWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const isMaximized = mainWindow.isMaximized();
+    const bounds = mainWindow.getNormalBounds ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+    fs.writeFileSync(windowStateFile, JSON.stringify({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      isMaximized
+    }));
+  } catch (e) {}
+}
+
+function debouncedSaveWindowState() {
+  if (saveWindowStateTimer) clearTimeout(saveWindowStateTimer);
+  saveWindowStateTimer = setTimeout(saveWindowState, 500);
+}
+
+
 function createWindow() {
+  const savedState = loadWindowState();
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    x: savedState.x,
+    y: savedState.y,
+    width: savedState.width || 1400,
+    height: savedState.height || 900,
     minWidth: 900,
     minHeight: 600,
     title: "Sameer AI Workspace",
@@ -62,6 +97,34 @@ function createWindow() {
 
   mainWindow.on("resize", () => {
     mainWindow?.webContents.send("openwork:browser:bounds-invalidated");
+    debouncedSaveWindowState();
+  });
+  mainWindow.on("move", () => {
+    debouncedSaveWindowState();
+  });
+  mainWindow.on("close", () => {
+    saveWindowState();
+  });
+
+  mainWindow.webContents.on("context-menu", (_e, params) => {
+    const menu = new Menu();
+    if (params.isEditable) {
+      menu.append(new MenuItem({ role: "undo" }));
+      menu.append(new MenuItem({ role: "redo" }));
+      menu.append(new MenuItem({ type: "separator" }));
+      menu.append(new MenuItem({ role: "cut" }));
+      menu.append(new MenuItem({ role: "copy" }));
+      menu.append(new MenuItem({ role: "paste" }));
+      menu.append(new MenuItem({ role: "selectAll" }));
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ role: "copy" }));
+      menu.append(new MenuItem({ role: "selectAll" }));
+    } else {
+      menu.append(new MenuItem({ label: "Reload", click: () => mainWindow?.reload() }));
+      menu.append(new MenuItem({ type: "separator" }));
+      menu.append(new MenuItem({ label: "Inspect Element", click: () => mainWindow?.webContents.inspectElement(params.x, params.y) }));
+    }
+    menu.popup({ window: mainWindow, x: params.x, y: params.y });
   });
 
   // Strip X-Frame-Options and Content-Security-Policy frame-ancestors
@@ -666,6 +729,89 @@ ipcMain.handle("restart-to-update", async (event, { downloadUrl } = {}) => {
   }
 });
 
+// OpenWork Approvals IPC Handlers
+ipcMain.handle("openwork:approval:respond", async (_event, { id, approved }) => {
+  if (localBridge && localBridge.approvals) {
+    return localBridge.approvals.resolve(id, approved);
+  }
+  return { success: false, error: "Approvals manager not available" };
+});
+
+ipcMain.handle("openwork:approval:list", async () => {
+  if (localBridge && localBridge.approvals) {
+    return localBridge.approvals.getPendingList();
+  }
+  return [];
+});
+
+// OpenWork Interactive Terminal IPC Handlers
+ipcMain.handle("openwork:terminal:spawn", async (_event, { id, shell }) => {
+  if (localBridge && localBridge.terminal) {
+    return localBridge.terminal.spawnInteractive(id, shell);
+  }
+  return { success: false, error: "Terminal manager not available" };
+});
+
+ipcMain.handle("openwork:terminal:write", async (_event, { id, input }) => {
+  if (localBridge && localBridge.terminal) {
+    return localBridge.terminal.write(id, input);
+  }
+  return { success: false, error: "Terminal manager not available" };
+});
+
+ipcMain.handle("openwork:terminal:read", async (_event, { id, clear }) => {
+  if (localBridge && localBridge.terminal) {
+    return localBridge.terminal.read(id, clear);
+  }
+  return { success: false, error: "Terminal manager not available", buffer: "" };
+});
+
+ipcMain.handle("openwork:terminal:kill", async (_event, { id }) => {
+  if (localBridge && localBridge.terminal) {
+    return localBridge.terminal.kill(id);
+  }
+  return { success: false, error: "Terminal manager not available" };
+});
+
+// OpenWork Embedded SQLite Database IPC Handlers
+ipcMain.handle("openwork:db:get-sessions", async () => {
+  if (localBridge && localBridge.db) {
+    return localBridge.db.getSessions();
+  }
+  return [];
+});
+
+ipcMain.handle("openwork:db:save-session", async (_event, session) => {
+  if (localBridge && localBridge.db) {
+    localBridge.db.saveSession(session);
+    return { success: true };
+  }
+  return { success: false };
+});
+
+ipcMain.handle("openwork:db:delete-session", async (_event, id) => {
+  if (localBridge && localBridge.db) {
+    localBridge.db.deleteSession(id);
+    return { success: true };
+  }
+  return { success: false };
+});
+
+ipcMain.handle("openwork:db:get-groups", async () => {
+  if (localBridge && localBridge.db) {
+    return localBridge.db.getGroups();
+  }
+  return [];
+});
+
+ipcMain.handle("openwork:db:save-group", async (_event, group) => {
+  if (localBridge && localBridge.db) {
+    localBridge.db.saveGroup(group);
+    return { success: true };
+  }
+  return { success: false };
+});
+
 // App menu
 function buildMenu() {
   const template = [
@@ -703,6 +849,12 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  // Media, Clipboard & Notification Permissions
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowed = ['media', 'clipboard-read', 'clipboard-sanitized-write', 'notifications', 'fullscreen', 'openExternal'];
+    callback(allowed.includes(permission));
+  });
+
   try { fs.appendFileSync(crashLogPath, "whenReady fired\n"); } catch(e){}
   buildMenu();
   try { fs.appendFileSync(crashLogPath, "buildMenu done\n"); } catch(e){}
