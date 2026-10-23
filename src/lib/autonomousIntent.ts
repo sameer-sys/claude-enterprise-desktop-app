@@ -94,15 +94,15 @@ const SERVICE_DIRECTORY: Record<string, { home: string; login: string; search?: 
     search: (q) => `https://www.amazon.com/s?k=${encodeURIComponent(q)}`,
   },
   linkedin: {
-    home: 'https://linkedin.com',
+    home: 'https://www.linkedin.com',
     login: 'https://www.linkedin.com/login',
   },
   instagram: {
-    home: 'https://instagram.com',
+    home: 'https://www.instagram.com',
     login: 'https://www.instagram.com/accounts/login/',
   },
   facebook: {
-    home: 'https://facebook.com',
+    home: 'https://www.facebook.com',
     login: 'https://www.facebook.com/login',
   },
   vercel: {
@@ -283,7 +283,17 @@ export function parseAutonomousIntent(
     else if (domainMatch) {
       targetUrl = `https://${domainMatch[1]}`;
     }
-    // C. Recognized Service
+    // C. Recognized Specific Repositories
+    else if (/desktop(?:\s+app)?(?:\s+repo|\s+repository)?/i.test(raw) || (/github/i.test(raw) && /desktop/i.test(raw))) {
+      targetUrl = 'https://github.com/sameer-sys/claude-enterprise-desktop-app';
+    }
+    else if (/web(?:\s+app)?(?:\s+repo|\s+repository)?/i.test(raw) || (/github/i.test(raw) && /web/i.test(raw))) {
+      targetUrl = 'https://github.com/sameer-sys/claude-enterprise-web-app';
+    }
+    else if (/mobile(?:\s+app)?(?:\s+repo|\s+repository)?/i.test(raw) || (/github/i.test(raw) && /mobile/i.test(raw))) {
+      targetUrl = 'https://github.com/sameer-sys/claude-enterprise-mobile-apk';
+    }
+    // D. Recognized Service
     else if (matchedServiceKey) {
       const svc = SERVICE_DIRECTORY[matchedServiceKey];
       if (hasLoginIntent) {

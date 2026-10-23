@@ -132,16 +132,24 @@ export default function ChatArea({
   const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
-    const check = () => {
-      fetch('/api/check-update')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.hasUpdate) setUpdateInfo(data);
-        })
-        .catch(() => {});
+    const check = async () => {
+      try {
+        let currentVer = '1.0.52';
+        if (typeof window !== 'undefined' && (window as any).electronAPI?.getVersion) {
+          const v = await (window as any).electronAPI.getVersion();
+          if (v) currentVer = v;
+        }
+        const res = await fetch(`/api/check-update?current=${encodeURIComponent(currentVer)}`);
+        const data = await res.json();
+        if (data?.hasUpdate) {
+          setUpdateInfo(data);
+        } else {
+          setUpdateInfo(null);
+        }
+      } catch {}
     };
     check();
-    const interval = setInterval(check, 5 * 60 * 1000);
+    const interval = setInterval(check, 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 

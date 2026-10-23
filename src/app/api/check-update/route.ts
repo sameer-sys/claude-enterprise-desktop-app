@@ -1,9 +1,30 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+function parseSemver(v: string): number[] {
+  const clean = v.replace(/^v/i, '').trim();
+  const parts = clean.split('.').map(n => parseInt(n, 10) || 0);
+  while (parts.length < 3) parts.push(0);
+  return parts;
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const l = parseSemver(latest);
+  const c = parseSemver(current);
+  for (let i = 0; i < Math.max(l.length, c.length); i++) {
+    const lNum = l[i] || 0;
+    const cNum = c[i] || 0;
+    if (lNum > cNum) return true;
+    if (lNum < cNum) return false;
+  }
+  return false;
+}
+
+export async function GET(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const clientVersion = searchParams.get('current') || searchParams.get('version') || '1.0.52';
     const repo = 'sameer-sys/claude-enterprise-desktop-app';
     const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
       headers: {
@@ -16,10 +37,10 @@ export async function GET() {
     if (!response.ok) {
       return NextResponse.json({
         hasUpdate: false,
-        latestVersion: '1.0.0',
-        currentVersion: '1.0.0',
+        latestVersion: clientVersion,
+        currentVersion: clientVersion,
         downloadUrl: `https://github.com/${repo}/releases`,
-        releaseNotes: 'No published releases found yet.',
+        releaseNotes: 'Up to date.',
       });
     }
 
@@ -28,13 +49,15 @@ export async function GET() {
       ? release.assets.find((a: any) => String(a.name).endsWith('.exe'))
       : null;
 
-    const latestVersion = release.tag_name || release.name || '1.0.1';
+    const latestVersion = release.tag_name || release.name || clientVersion;
     const downloadUrl = exeAsset?.browser_download_url || release.html_url || `https://github.com/${repo}/releases`;
 
+    const hasUpdate = isNewerVersion(latestVersion, clientVersion);
+
     return NextResponse.json({
-      hasUpdate: true,
+      hasUpdate,
       latestVersion,
-      currentVersion: '1.0.0',
+      currentVersion: clientVersion,
       downloadUrl,
       releaseNotes: release.body || 'New features, bug fixes, and performance improvements.',
       publishedAt: release.published_at,
