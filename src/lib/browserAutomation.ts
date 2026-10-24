@@ -195,7 +195,7 @@ export async function browserClick(ref?: string, selector?: string): Promise<str
     });
     if (pageState?.result?.value) {
       const parsed = JSON.parse(pageState.result.value);
-      return `${clickedText}. Current Page: "${parsed.title}" (${parsed.url})`;
+      return `${clickedText}. Current Page: "${parsed.title}" (${parsed.url}). Re-observe the page to verify the intended outcome before reporting the task complete.`;
     }
   } catch {}
 
@@ -248,12 +248,15 @@ export async function browserType(text: string, ref?: string, selector?: string,
         }
         target.dispatchEvent(new Event('input', { bubbles: true }));
         target.dispatchEvent(new Event('change', { bubbles: true }));
+        const expected = ${JSON.stringify(text)};
+        const actual = target.value !== undefined ? String(target.value) : String(target.innerText || '');
+        if (actual !== expected) return "Typing verification failed: the selected field does not contain the requested text. Re-observe the page and retry with the correct input reference.";
         if (${Boolean(pressEnter)}) {
           target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           const form = target.closest('form');
           if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         }
-        return "Typed: " + ${JSON.stringify(text)};
+        return "Typed and verified: " + ${JSON.stringify(text)};
       }
       return "No editable input found";
     })()`,
