@@ -1354,7 +1354,7 @@ class LocalBridgeServer {
       const currentUrl = contents.getURL();
       const currentTitle = contents.getTitle();
       const obscureNote = res.obscured ? ` (Note: element had an overlay: <${res.obscuredBy}>)` : '';
-      return `Clicked ${res.clicked} ("${res.text}")${obscureNote}. Current Page: "${currentTitle}" (${currentUrl})`;
+      return `Click dispatched to ${res.clicked} ("${res.text}")${obscureNote}. Current Page: "${currentTitle}" (${currentUrl}). Re-observe the page to verify the intended outcome before reporting the task complete.`;
     }
 
     // D. Browser Type (Native Input + Keystrokes)
@@ -1427,6 +1427,17 @@ class LocalBridgeServer {
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }
         })()`);
+      }
+
+      // Verify the browser accepted the text before reporting success.
+      const typeCheck = await contents.executeJavaScript(`(() => {
+        const el = document.activeElement;
+        if (!el) return { success: false, actual: '' };
+        const value = el.value !== undefined ? String(el.value) : (el.isContentEditable ? String(el.innerText || '') : '');
+        return { success: value === ${JSON.stringify(text)}, actual: value.slice(0, 120) };
+      })()`);
+      if (!typeCheck.success) {
+        return `Typing verification failed: the focused field does not contain the requested text. Actual value: "${String(typeCheck.actual || '').slice(0, 120)}". Re-observe the page and retry with the correct input reference.`;
       }
 
       // 3. Press Enter if requested
