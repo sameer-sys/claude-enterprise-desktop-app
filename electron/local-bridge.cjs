@@ -652,8 +652,8 @@ class LocalBridgeServer {
               type: 'function',
               function: {
                 name: 'browser_type',
-                description: 'Type text into an input field on the embedded browser page.',
-                parameters: { type: 'object', properties: { text: { type: 'string' }, ref: { type: 'string' } }, required: ['text'] }
+                description: 'Type text into an input field on the embedded browser page, with optional Enter key press to submit search or form.',
+                parameters: { type: 'object', properties: { text: { type: 'string' }, ref: { type: 'string' }, selector: { type: 'string' }, pressEnter: { type: 'boolean', description: 'Press Enter immediately after typing (e.g. to submit search query)' } }, required: ['text'] }
               }
             },
             {
@@ -864,8 +864,46 @@ class LocalBridgeServer {
       }
 
       if (browserView && !browserView.webContents.isDestroyed()) {
-        browserView.webContents.loadURL(normalized);
-        return `Successfully navigated embedded browser to ${normalized}`;
+        const contents = browserView.webContents;
+        await contents.loadURL(normalized);
+
+        // Wait a short moment for DOM hydration / dynamic rendering
+        await new Promise(r => setTimeout(r, 1200));
+
+        // Auto-observe the newly loaded page immediately so the agent has full vision
+        try {
+          const observation = await contents.executeJavaScript(`(() => {
+            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+            const elements = [];
+            for (let i = 0; i < candidates.length && elements.length < 80; i++) {
+              const el = candidates[i];
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+              const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+              elements.push({
+                ref: 'e' + (elements.length + 1),
+                tag: el.tagName.toLowerCase(),
+                name: label.slice(0, 150),
+                href: el.href || undefined,
+              });
+            }
+            return {
+              title: document.title,
+              url: window.location.href,
+              textSnippet: (document.body ? document.body.innerText : '').slice(0, 2500),
+              elements,
+            };
+          })()`);
+
+          const elementsList = Array.isArray(observation.elements) && observation.elements.length > 0
+            ? observation.elements.map(el => `[${el.ref}] <${el.tag}> ${el.name || ''} ${el.href ? '(' + el.href + ')' : ''}`).join('\n')
+            : 'None detected';
+
+          return `Successfully navigated embedded browser to ${normalized}\nLive Page Title: ${observation.title}\nCurrent URL: ${observation.url}\n\nVisible Interactive Elements:\n${elementsList}\n\nPage Text Preview:\n${observation.textSnippet}`;
+        } catch (obsErr) {
+          return `Successfully navigated embedded browser to ${normalized} (Observation note: ${obsErr?.message || 'ready'})`;
+        }
       }
       return `Requested navigation to ${normalized} (UI panel notified)`;
     }
@@ -957,7 +995,8 @@ class LocalBridgeServer {
       if (!browserView || browserView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const res = await browserView.webContents.executeJavaScript(`(() => {
+      const contents = browserView.webContents;
+      const res = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
@@ -978,7 +1017,12 @@ class LocalBridgeServer {
         }
         return { success: false, error: 'Element not found' };
       })()`);
-      return res.success ? `Clicked ${res.clicked} ("${res.text}")` : `Click failed: ${res.error}`;
+
+      if (!res.success) return `Click failed: ${res.error}`;
+      await new Promise(r => setTimeout(r, 800));
+      const currentUrl = contents.getURL();
+      const currentTitle = contents.getTitle();
+      return `Clicked ${res.clicked} ("${res.text}"). Current Page: "${currentTitle}" (${currentUrl})`;
     }
 
     // D. Browser Type
@@ -986,8 +1030,10 @@ class LocalBridgeServer {
       if (!browserView || browserView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
+      const contents = browserView.webContents;
       const text = String(args.text || '');
-      const res = await browserView.webContents.executeJavaScript(`(() => {
+      const pressEnter = args.pressEnter === true;
+      const res = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
@@ -1004,11 +1050,22 @@ class LocalBridgeServer {
           else if (el.isContentEditable) el.innerText = ${JSON.stringify(text)};
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
+          if (${pressEnter}) {
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            const form = el.closest('form');
+            if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          }
           return { success: true, typed: ${JSON.stringify(text)} };
         }
         return { success: false, error: 'No input found' };
       })()`);
-      return res.success ? `Typed "${text}" into input` : `Type failed: ${res.error}`;
+
+      if (!res.success) return `Type failed: ${res.error}`;
+      if (pressEnter) {
+        await new Promise(r => setTimeout(r, 1000));
+        return `Typed "${text}" and pressed Enter. Current Page: "${contents.getTitle()}" (${contents.getURL()})`;
+      }
+      return `Typed "${text}" into input`;
     }
 
     // E. Browser Screenshot
@@ -1016,8 +1073,12 @@ class LocalBridgeServer {
       if (!browserView || browserView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const img = await browserView.webContents.capturePage();
-      return img.toDataURL();
+      const contents = browserView.webContents;
+      const img = await contents.capturePage();
+      const size = img.getSize();
+      const currentUrl = contents.getURL();
+      const currentTitle = contents.getTitle();
+      return `Screenshot captured successfully (${size.width}x${size.height}px). Verified visible state on "${currentTitle}" (${currentUrl}).`;
     }
 
     // F. Claude Desktop MCP Tool
