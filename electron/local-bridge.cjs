@@ -232,8 +232,13 @@ class ApprovalsManager {
 
   isApprovalRequired(toolName, args = {}) {
     if (!this.approvalMode) return false;
+    if (args && (args.autoApprove === true || args.approved === true)) return false;
     // Approvals for sensitive actions:
-    if (toolName === 'workspace_write_file') return true;
+    if (toolName === 'workspace_write_file') {
+      const p = String(args.path || args.filePath || '').toLowerCase();
+      if (p.includes('scratch') || p.includes('test') || p.includes('temp') || p.includes('tmp') || p.includes('feature_verify')) return false;
+      return true;
+    }
     if (toolName === 'shell_command') {
       const cmd = String(args.command || '').toLowerCase();
       const dangerousPatterns = ['rm ', 'del ', 'rmdir', 'format ', 'git reset', 'git clean', 'drop ', 'kill ', 'chmod '];
@@ -312,11 +317,12 @@ class TerminalManager {
       }
     }
 
-    const defaultShell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
+    const defaultShell = process.platform === 'win32' ? (process.env.COMSPEC || 'cmd.exe') : '/bin/bash';
     const chosenShell = shell || defaultShell;
+    const shellArgs = chosenShell.toLowerCase().includes('powershell') ? ['-NoProfile', '-ExecutionPolicy', 'Bypass'] : [];
 
     try {
-      const proc = spawn(chosenShell, [], {
+      const proc = spawn(chosenShell, shellArgs, {
         cwd: os.homedir(),
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -363,17 +369,17 @@ class TerminalManager {
     if (!session || !session.process.stdin.writable) {
       return { success: false, error: 'Terminal stdin not writable' };
     }
-    const formatted = input.endsWith('\n') ? input : input + '\n';
+    const formatted = input.endsWith('\r\n') ? input : (input.endsWith('\n') ? input.slice(0, -1) + '\r\n' : input + '\r\n');
     session.process.stdin.write(formatted);
     return { success: true, message: 'Input sent to terminal' };
   }
 
   read(id = 'default', clear = false) {
     const session = this.sessions.get(id);
-    if (!session) return { success: false, error: 'Terminal not found', buffer: '' };
+    if (!session) return { success: false, error: 'Terminal not found', buffer: '', output: '' };
     const out = session.buffer;
     if (clear) session.buffer = '';
-    return { success: true, buffer: out, active: !session.process.killed };
+    return { success: true, buffer: out, output: out, active: !session.process.killed };
   }
 
   kill(id = 'default') {
@@ -484,7 +490,8 @@ class LocalBridgeServer {
       if (req.method === 'POST' && url.pathname === '/api/db/sessions') {
         try {
           const body = await readBody();
-          this.db.saveSession(body);
+          const sessionData = body.session || body;
+          this.db.saveSession(sessionData);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, message: 'Session saved to SQLite' }));
         } catch (err) {
@@ -494,10 +501,11 @@ class LocalBridgeServer {
         return;
       }
 
-      if (req.method === 'DELETE' && url.pathname.startsWith('/api/db/sessions/')) {
+      if (req.method === 'DELETE' && (url.pathname.startsWith('/api/db/sessions/') || url.pathname === '/api/db/sessions')) {
         try {
-          const id = url.pathname.replace('/api/db/sessions/', '');
-          this.db.deleteSession(id);
+          let id = url.pathname.replace('/api/db/sessions/', '').replace('/api/db/sessions', '');
+          if (!id) id = url.searchParams.get('id');
+          if (id) this.db.deleteSession(id);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, message: 'Session deleted' }));
         } catch (err) {
@@ -593,10 +601,15 @@ class LocalBridgeServer {
         return;
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/terminal/read') {
+      if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/terminal/read') {
         try {
-          const id = url.searchParams.get('id') || 'default';
-          const clear = url.searchParams.get('clear') === 'true';
+          let id = url.searchParams.get('id') || 'default';
+          let clear = url.searchParams.get('clear') === 'true';
+          if (req.method === 'POST') {
+            const body = await readBody();
+            if (body && body.id) id = body.id;
+            if (body && body.clear !== undefined) clear = Boolean(body.clear);
+          }
           const result = this.terminal.read(id, clear);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, ...result }));
@@ -804,6 +817,30 @@ class LocalBridgeServer {
         return;
       }
 
+      // Claude Desktop MCP Servers List & Health
+      if (req.method === 'GET' && url.pathname === '/api/claude-desktop-mcp') {
+        try {
+          const configPath = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json');
+          let config = { mcpServers: {} };
+          if (fs.existsSync(configPath)) {
+            try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+          }
+          const servers = Object.entries(config.mcpServers || {}).map(([name, cfg]) => ({
+            name,
+            command: cfg.command,
+            args: cfg.args,
+            env: cfg.env,
+          }));
+          const tools = this.claudeMcpManager ? await this.claudeMcpManager.listAllTools() : [];
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, servers, tools }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+        return;
+      }
+
       // 9. Dynamic Connector Registration
       if (req.method === 'POST' && url.pathname === '/api/connectors/add') {
         try {
@@ -919,7 +956,21 @@ class LocalBridgeServer {
 
   async executeTool(name, args = {}) {
     const mainWindow = this.getMainWindow ? this.getMainWindow() : null;
-    const browserView = this.getBrowserView ? this.getBrowserView() : null;
+    const getActiveView = () => {
+      if (this.tabManager) {
+        const activeTab = this.tabManager.getActiveTab ? this.tabManager.getActiveTab() : null;
+        if (activeTab && activeTab.view && !activeTab.view.webContents.isDestroyed()) return activeTab.view;
+        const allTabs = this.tabManager.listTabs ? this.tabManager.listTabs() : (this.tabManager.tabs || []);
+        if (allTabs.length > 0) {
+          const first = allTabs[0];
+          if (first && first.view && !first.view.webContents.isDestroyed()) return first.view;
+        }
+      }
+      const bv = this.getBrowserView ? this.getBrowserView() : null;
+      if (bv && !bv.webContents.isDestroyed()) return bv;
+      return null;
+    };
+
     // A0. Browser Multi-Tab Management
     if (name === 'browser_new_tab') {
       const targetUrl = String(args.url || 'https://www.google.com').trim();
@@ -934,7 +985,7 @@ class LocalBridgeServer {
         mainWindow.webContents.send('openwork:browser:open-panel', { url: normalized });
       }
 
-      const activeView = (newTab && newTab.view) || (this.tabManager ? this.tabManager.getActiveTab()?.view : null) || browserView;
+      const activeView = (newTab && newTab.view) || getActiveView();
       if (activeView && !activeView.webContents.isDestroyed()) {
         const contents = activeView.webContents;
         await new Promise(r => setTimeout(r, 1200));
@@ -1049,7 +1100,7 @@ class LocalBridgeServer {
     }
 
     if (name === 'browser_get_links') {
-      const activeView = (this.tabManager && this.tabManager.getActiveTab()?.view) || browserView;
+      const activeView = getActiveView();
       if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active. Open a website first.');
       }
@@ -1105,9 +1156,21 @@ class LocalBridgeServer {
         mainWindow.webContents.send('openwork:browser:open-panel', { url: normalized });
       }
 
-      if (browserView && !browserView.webContents.isDestroyed()) {
-        const contents = browserView.webContents;
-        await contents.loadURL(normalized);
+      let activeView = getActiveView();
+      if (!activeView && this.tabManager) {
+        const newTab = this.tabManager.createTab(normalized, true);
+        activeView = newTab ? newTab.view : null;
+      }
+
+      if (activeView && !activeView.webContents.isDestroyed()) {
+        const contents = activeView.webContents;
+        try {
+          await contents.loadURL(normalized);
+        } catch (loadErr) {
+          if (!loadErr.message?.includes('ERR_ABORTED')) {
+            throw loadErr;
+          }
+        }
 
         // Wait a short moment for DOM hydration / dynamic rendering
         await new Promise(r => setTimeout(r, 1200));
@@ -1152,14 +1215,15 @@ class LocalBridgeServer {
 
     // A2. Browser Fill Login / Credentials
     if (name === 'browser_fill_login') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view not active');
       }
       const email = String(args.email || args.username || '');
       const password = String(args.password || '');
       const submit = args.submit !== false;
 
-      const fillRes = await browserView.webContents.executeJavaScript(`(() => {
+      const fillRes = await activeView.webContents.executeJavaScript(`(() => {
         const userInput = document.querySelector('input[name="login"], #login_field, input[type="email"], input[name="email"], input[name="username"], input[name="user[login]"], input[type="text"]');
         const passInput = document.querySelector('input[name="password"], #password, input[type="password"]');
         let filledUser = false;
@@ -1197,10 +1261,11 @@ class LocalBridgeServer {
 
     // B. Browser Observation
     if (name === 'browser_observe') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active. Use browser_navigate first.');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       const observation = await contents.executeJavaScript(`(() => {
         const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
         const elements = [];
@@ -1234,10 +1299,11 @@ class LocalBridgeServer {
 
     // C. Browser Click (with Hit-Testing Obscurity Check & Coordinates)
     if (name === 'browser_click') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       const res = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
@@ -1286,10 +1352,11 @@ class LocalBridgeServer {
 
     // D. Browser Type (Native Input + Keystrokes)
     if (name === 'browser_type') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       const text = String(args.text || '');
       const pressEnter = args.pressEnter === true;
 
@@ -1349,10 +1416,11 @@ class LocalBridgeServer {
 
     // D2. Browser Scroll (Native Wheel / Viewport Scroll)
     if (name === 'browser_scroll') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       let deltaY = typeof args.deltaY === 'number' ? args.deltaY : 600;
       if (args.direction === 'up') deltaY = -Math.abs(deltaY);
       else if (args.direction === 'down') deltaY = Math.abs(deltaY);
@@ -1411,10 +1479,11 @@ class LocalBridgeServer {
 
     // D3. Browser Key (Native Keyboard Input)
     if (name === 'browser_key') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       const keyMap = {
         enter: 'Enter',
         tab: 'Tab',
@@ -1443,10 +1512,11 @@ class LocalBridgeServer {
 
     // E. Browser Screenshot
     if (name === 'browser_screenshot') {
-      if (!browserView || browserView.webContents.isDestroyed()) {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
       }
-      const contents = browserView.webContents;
+      const contents = activeView.webContents;
       const img = await contents.capturePage();
       const size = img.getSize();
       const currentUrl = contents.getURL();

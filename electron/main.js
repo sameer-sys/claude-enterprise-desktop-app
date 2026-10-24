@@ -30,6 +30,7 @@ let tray = null;
 let browserViewInstance = null;
 let currentBrowserUrl = "https://github.com";
 let localBridge = null;
+let browserTabManager = null;
 
 const windowStateFile = path.join(app.getPath("userData"), "window-state.json");
 function loadWindowState() {
@@ -410,7 +411,7 @@ function createWindow() {
     }
   }
 
-  const browserTabManager = new BrowserTabManager(() => mainWindow);
+  browserTabManager = new BrowserTabManager(() => mainWindow);
   function getOrCreateBrowserView() {
     let active = browserTabManager.getActiveTab();
     if (!active) {
