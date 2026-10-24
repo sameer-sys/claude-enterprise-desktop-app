@@ -659,6 +659,34 @@ class LocalBridgeServer {
             {
               type: 'function',
               function: {
+                name: 'browser_scroll',
+                description: 'Scroll the embedded browser page up, down, to top, or to bottom to reveal content below the fold.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    deltaY: { type: 'number', description: 'Scroll distance in pixels (e.g. 600 to scroll down, -600 to scroll up)' },
+                    direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'], description: 'Direction helper: "down", "up", "top", or "bottom"' }
+                  }
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_key',
+                description: 'Press a native keyboard key in the embedded browser (Enter, Tab, Escape to close modals/popups, ArrowDown, Backspace, Space).',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    key: { type: 'string', description: 'Key name: "Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "Backspace", "Space"' }
+                  },
+                  required: ['key']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
                 name: 'browser_screenshot',
                 description: 'Capture a visual PNG snapshot of the open page in the embedded browser.',
                 parameters: { type: 'object', properties: {} }
@@ -990,7 +1018,7 @@ class LocalBridgeServer {
       return `URL: ${observation.url}\nTitle: ${observation.title}\n\nContent Snippet:\n${observation.textSnippet}\n\nInteractive Elements:\n${elementsList}`;
     }
 
-    // C. Browser Click
+    // C. Browser Click (with Hit-Testing Obscurity Check & Coordinates)
     if (name === 'browser_click') {
       if (!browserView || browserView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
@@ -1001,7 +1029,7 @@ class LocalBridgeServer {
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
         } else if (${JSON.stringify(args.ref || null)}) {
-          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"]'));
+          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
           const visible = candidates.filter(item => {
             const r = item.getBoundingClientRect();
             return r.width > 0 && r.height > 0;
@@ -1009,23 +1037,40 @@ class LocalBridgeServer {
           const idx = parseInt(String(${JSON.stringify(args.ref)}).replace(/^e/i, '')) - 1;
           el = visible[idx];
         }
-        if (el) {
-          el.scrollIntoView({ behavior: 'instant', block: 'center' });
-          el.focus();
-          el.click();
-          return { success: true, clicked: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').slice(0, 60) };
-        }
-        return { success: false, error: 'Element not found' };
+        if (!el) return { success: false, error: 'Element not found on page' };
+
+        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+        const rect = el.getBoundingClientRect();
+        const x = rect.x + rect.width / 2;
+        const y = rect.y + rect.height / 2;
+
+        // Obscurity Check: verify no floating modal/cookie banner is covering the element
+        const topEl = document.elementFromPoint(x, y);
+        const isObscured = topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el);
+
+        el.focus();
+        el.click();
+
+        return {
+          success: true,
+          clicked: el.tagName.toLowerCase(),
+          text: (el.innerText || el.value || el.getAttribute('aria-label') || '').slice(0, 60),
+          obscured: isObscured,
+          obscuredBy: isObscured ? topEl.tagName.toLowerCase() : null,
+          x: Math.round(x),
+          y: Math.round(y)
+        };
       })()`);
 
       if (!res.success) return `Click failed: ${res.error}`;
       await new Promise(r => setTimeout(r, 800));
       const currentUrl = contents.getURL();
       const currentTitle = contents.getTitle();
-      return `Clicked ${res.clicked} ("${res.text}"). Current Page: "${currentTitle}" (${currentUrl})`;
+      const obscureNote = res.obscured ? ` (Note: element had an overlay: <${res.obscuredBy}>)` : '';
+      return `Clicked ${res.clicked} ("${res.text}")${obscureNote}. Current Page: "${currentTitle}" (${currentUrl})`;
     }
 
-    // D. Browser Type
+    // D. Browser Type (Native Input + Keystrokes)
     if (name === 'browser_type') {
       if (!browserView || browserView.webContents.isDestroyed()) {
         throw new Error('Browser view is not active');
@@ -1033,7 +1078,9 @@ class LocalBridgeServer {
       const contents = browserView.webContents;
       const text = String(args.text || '');
       const pressEnter = args.pressEnter === true;
-      const res = await contents.executeJavaScript(`(() => {
+
+      // 1. Focus element and select existing text in DOM
+      const prepRes = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
@@ -1044,28 +1091,140 @@ class LocalBridgeServer {
         } else {
           el = document.activeElement || document.querySelector('input, textarea');
         }
-        if (el) {
-          el.focus();
-          if (el.value !== undefined) el.value = ${JSON.stringify(text)};
-          else if (el.isContentEditable) el.innerText = ${JSON.stringify(text)};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          if (${pressEnter}) {
-            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-            const form = el.closest('form');
-            if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-          }
-          return { success: true, typed: ${JSON.stringify(text)} };
-        }
-        return { success: false, error: 'No input found' };
+        if (!el) return { success: false, error: 'No input field found' };
+
+        el.focus();
+        if (typeof el.select === 'function') el.select();
+        else if (el.isContentEditable) document.getSelection()?.selectAllChildren(el);
+
+        return { success: true, tag: el.tagName.toLowerCase() };
       })()`);
 
-      if (!res.success) return `Type failed: ${res.error}`;
+      if (!prepRes.success) return `Type failed: ${prepRes.error}`;
+
+      // 2. Use native insertText if available for authentic keystrokes
+      try {
+        if (typeof contents.insertText === 'function') {
+          await contents.insertText(text);
+        } else {
+          throw new Error('insertText unavailable');
+        }
+      } catch {
+        // Fallback to DOM input dispatch
+        await contents.executeJavaScript(`(() => {
+          const el = document.activeElement;
+          if (el) {
+            if (el.value !== undefined) el.value = ${JSON.stringify(text)};
+            else if (el.isContentEditable) el.innerText = ${JSON.stringify(text)};
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        })()`);
+      }
+
+      // 3. Press Enter if requested
       if (pressEnter) {
+        contents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
         await new Promise(r => setTimeout(r, 1000));
         return `Typed "${text}" and pressed Enter. Current Page: "${contents.getTitle()}" (${contents.getURL()})`;
       }
-      return `Typed "${text}" into input`;
+
+      return `Typed "${text}" into ${prepRes.tag}`;
+    }
+
+    // D2. Browser Scroll (Native Wheel / Viewport Scroll)
+    if (name === 'browser_scroll') {
+      if (!browserView || browserView.webContents.isDestroyed()) {
+        throw new Error('Browser view is not active');
+      }
+      const contents = browserView.webContents;
+      let deltaY = typeof args.deltaY === 'number' ? args.deltaY : 600;
+      if (args.direction === 'up') deltaY = -Math.abs(deltaY);
+      else if (args.direction === 'down') deltaY = Math.abs(deltaY);
+      else if (args.direction === 'top') deltaY = -999999;
+      else if (args.direction === 'bottom') deltaY = 999999;
+
+      const scrollRes = await contents.executeJavaScript(`(() => {
+        const startY = window.scrollY;
+        if (${deltaY} === -999999) {
+          window.scrollTo({ top: 0, behavior: 'instant' });
+        } else if (${deltaY} === 999999) {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+        } else {
+          window.scrollBy({ top: ${deltaY}, behavior: 'instant' });
+        }
+        return {
+          prevY: Math.round(startY),
+          currY: Math.round(window.scrollY),
+          maxY: Math.round(document.body.scrollHeight - window.innerHeight),
+          scrolled: Math.round(window.scrollY) !== Math.round(startY)
+        };
+      })()`);
+
+      await new Promise(r => setTimeout(r, 600));
+
+      // Auto-observe newly revealed elements in viewport
+      const observation = await contents.executeJavaScript(`(() => {
+        const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+        const elements = [];
+        for (let i = 0; i < candidates.length && elements.length < 80; i++) {
+          const el = candidates[i];
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+          if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+          const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+          elements.push({
+            ref: 'e' + (elements.length + 1),
+            tag: el.tagName.toLowerCase(),
+            name: label.slice(0, 150),
+            href: el.href || undefined,
+          });
+        }
+        return {
+          elements,
+          textSnippet: (document.body ? document.body.innerText : '').slice(0, 2000)
+        };
+      })()`);
+
+      const elementsList = Array.isArray(observation?.elements) && observation.elements.length > 0
+        ? observation.elements.map(el => `[${el.ref}] <${el.tag}> ${el.name} ${el.href ? '(' + el.href + ')' : ''}`).join('\n')
+        : 'None detected in view';
+
+      return `Scrolled page (scroll position: ${scrollRes.currY}px / ${scrollRes.maxY}px max).\n\nVisible Elements Now In Viewport:\n${elementsList}`;
+    }
+
+    // D3. Browser Key (Native Keyboard Input)
+    if (name === 'browser_key') {
+      if (!browserView || browserView.webContents.isDestroyed()) {
+        throw new Error('Browser view is not active');
+      }
+      const contents = browserView.webContents;
+      const keyMap = {
+        enter: 'Enter',
+        tab: 'Tab',
+        escape: 'Escape',
+        esc: 'Escape',
+        backspace: 'Backspace',
+        space: 'Space',
+        arrowdown: 'Down',
+        down: 'Down',
+        arrowup: 'Up',
+        up: 'Up',
+        arrowleft: 'Left',
+        arrowright: 'Right',
+      };
+      const rawKey = String(args.key || 'Enter').toLowerCase().trim();
+      const mapped = keyMap[rawKey] || args.key || 'Enter';
+
+      contents.sendInputEvent({ type: 'keyDown', keyCode: mapped });
+      contents.sendInputEvent({ type: 'keyUp', keyCode: mapped });
+
+      await new Promise(r => setTimeout(r, 600));
+      const currentUrl = contents.getURL();
+      const currentTitle = contents.getTitle();
+      return `Pressed key "${mapped}". Current Page: "${currentTitle}" (${currentUrl})`;
     }
 
     // E. Browser Screenshot
