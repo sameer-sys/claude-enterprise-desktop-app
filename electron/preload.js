@@ -40,8 +40,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     type: (params) => ipcRenderer.invoke('openwork:browser:type', params),
     screenshot: () => ipcRenderer.invoke('openwork:browser:screenshot'),
     createTab: (url, sessionId) => ipcRenderer.invoke('openwork:browser:createTab', url, sessionId),
+    newTab: (url) => ipcRenderer.invoke('openwork:browser:createTab', url),
     closeTab: (tabId) => ipcRenderer.invoke('openwork:browser:closeTab', tabId),
     selectTab: (tabId) => ipcRenderer.invoke('openwork:browser:selectTab', tabId),
+    switchTab: (tabId) => ipcRenderer.invoke('openwork:browser:selectTab', tabId),
+    listTabs: () => ipcRenderer.invoke('openwork:browser:listTabs'),
+    getLinks: (params) => ipcRenderer.invoke('openwork:browser:getLinks', params),
+    onTabsUpdated: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on('openwork:browser:tabs-updated', handler);
+      return () => ipcRenderer.removeListener('openwork:browser:tabs-updated', handler);
+    },
     onNavigated: (callback) => {
       const handler = (_event, data) => callback(data);
       ipcRenderer.on('openwork:browser:navigated', handler);

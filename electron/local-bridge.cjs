@@ -393,7 +393,8 @@ class TerminalManager {
 // 4. Main Local Bridge Server
 // -------------------------------------------------------------
 class LocalBridgeServer {
-  constructor({ getMainWindow, getBrowserView, claudeMcpManager, sidecarPath }) {
+  constructor({ getMainWindow, getBrowserView, tabManager, claudeMcpManager, sidecarPath }) {
+    this.tabManager = tabManager;
     this.getMainWindow = getMainWindow;
     this.getBrowserView = getBrowserView;
     this.claudeMcpManager = claudeMcpManager;
@@ -624,6 +625,46 @@ class LocalBridgeServer {
         try {
           const claudeTools = this.claudeMcpManager ? await this.claudeMcpManager.listAllTools() : [];
           const nativeTools = [
+            {
+              type: 'function',
+              function: {
+                name: 'browser_new_tab',
+                description: 'Open a new browser tab beside existing tabs with a specified or blank website URL. Use whenever the user asks to open a new tab or open a fresh tab.',
+                parameters: { type: 'object', properties: { url: { type: 'string', description: 'The URL to open in the new tab (e.g. "https://vercel.com").' } } }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_switch_tab',
+                description: 'Switch the active browser tab by tabId, index (1-based), or title/URL keyword search.',
+                parameters: { type: 'object', properties: { tabId: { type: 'string' }, index: { type: 'number' }, query: { type: 'string' } } }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_list_tabs',
+                description: 'List all open browser tabs, their IDs, URLs, page titles, and active status.',
+                parameters: { type: 'object', properties: {} }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_close_tab',
+                description: 'Close an open browser tab by tabId or index.',
+                parameters: { type: 'object', properties: { tabId: { type: 'string' }, index: { type: 'number' } } }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_get_links',
+                description: 'Extract all hyperlinks (<a> tags) from the active browser page with their visible text and full URL href. Optionally filter by keyword and automatically copy the matching link to the clipboard.',
+                parameters: { type: 'object', properties: { query: { type: 'string' }, copyToClipboard: { type: 'boolean' } } }
+              }
+            },
             {
               type: 'function',
               function: {
@@ -879,6 +920,179 @@ class LocalBridgeServer {
   async executeTool(name, args = {}) {
     const mainWindow = this.getMainWindow ? this.getMainWindow() : null;
     const browserView = this.getBrowserView ? this.getBrowserView() : null;
+    // A0. Browser Multi-Tab Management
+    if (name === 'browser_new_tab') {
+      const targetUrl = String(args.url || 'https://www.google.com').trim();
+      const normalized = /^https?:\/\//i.test(targetUrl) ? targetUrl : `https://${targetUrl}`;
+
+      let newTab = null;
+      if (this.tabManager) {
+        newTab = this.tabManager.createTab(normalized, true);
+      }
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('openwork:browser:open-panel', { url: normalized });
+      }
+
+      const activeView = (newTab && newTab.view) || (this.tabManager ? this.tabManager.getActiveTab()?.view : null) || browserView;
+      if (activeView && !activeView.webContents.isDestroyed()) {
+        const contents = activeView.webContents;
+        await new Promise(r => setTimeout(r, 1200));
+
+        try {
+          const observation = await contents.executeJavaScript(`(() => {
+            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+            const elements = [];
+            for (let i = 0; i < candidates.length && elements.length < 80; i++) {
+              const el = candidates[i];
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+              const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+              elements.push({
+                ref: 'e' + (elements.length + 1),
+                tag: el.tagName.toLowerCase(),
+                name: label.slice(0, 150),
+                href: el.href || undefined,
+              });
+            }
+            return {
+              title: document.title,
+              url: window.location.href,
+              textSnippet: (document.body ? document.body.innerText : '').slice(0, 2500),
+              elements,
+            };
+          })()`);
+
+          const elementsList = Array.isArray(observation.elements) && observation.elements.length > 0
+            ? observation.elements.map(el => `[${el.ref}] <${el.tag}> ${el.name || ''} ${el.href ? '(' + el.href + ')' : ''}`).join('\n')
+            : 'None detected';
+
+          return `Successfully opened new browser tab [Tab ID: ${newTab ? newTab.id : 'tab_new'}] at ${normalized}\nLive Page Title: ${observation.title}\nCurrent URL: ${observation.url}\n\nVisible Interactive Elements:\n${elementsList}\n\nPage Text Preview:\n${observation.textSnippet}`;
+        } catch (obsErr) {
+          return `Successfully opened new browser tab at ${normalized} (Tab ID: ${newTab ? newTab.id : 'tab_new'})`;
+        }
+      }
+      return `Opened new tab at ${normalized}`;
+    }
+
+    if (name === 'browser_switch_tab') {
+      if (!this.tabManager) throw new Error('Tab manager not available');
+      const tabs = this.tabManager.listTabs();
+      let targetTab = null;
+
+      if (args.tabId) {
+        targetTab = tabs.find(t => t.id === args.tabId || t.tabId === args.tabId);
+      }
+      if (!targetTab && typeof args.index === 'number') {
+        const idx = Math.max(0, Math.min(tabs.length - 1, Math.round(args.index) - 1));
+        targetTab = tabs[idx];
+      }
+      if (!targetTab && args.query) {
+        const q = String(args.query).toLowerCase();
+        targetTab = tabs.find(t => (t.title && t.title.toLowerCase().includes(q)) || (t.url && t.url.toLowerCase().includes(q)));
+      }
+      if (!targetTab && tabs.length > 0) {
+        targetTab = tabs[0];
+      }
+
+      if (!targetTab) throw new Error('No matching browser tab found to switch to.');
+
+      this.tabManager.selectTab(targetTab.id);
+
+      const activeTab = this.tabManager.getActiveTab();
+      if (activeTab && activeTab.view && !activeTab.view.webContents.isDestroyed()) {
+        const contents = activeTab.view.webContents;
+        try {
+          const observation = await contents.executeJavaScript(`(() => ({
+            title: document.title,
+            url: window.location.href,
+            textSnippet: (document.body ? document.body.innerText : '').slice(0, 2000),
+          }))()`);
+          return `Switched active browser tab to [${targetTab.id}] "${observation.title}" (${observation.url})\n\nPage Text Preview:\n${observation.textSnippet}`;
+        } catch (e) {
+          return `Switched active browser tab to [${targetTab.id}] "${targetTab.title}"`;
+        }
+      }
+      return `Switched active browser tab to [${targetTab.id}]`;
+    }
+
+    if (name === 'browser_list_tabs') {
+      if (!this.tabManager) {
+        const url = browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.getURL() : 'None';
+        const title = browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.getTitle() : 'None';
+        return `Open Browser Tabs (1):\n1. [ACTIVE] "${title}" - ${url} (ID: tab_default)`;
+      }
+      const tabs = this.tabManager.listTabs();
+      if (tabs.length === 0) return 'No browser tabs currently open.';
+      const list = tabs.map((t, i) => `${i + 1}. [${t.active ? 'ACTIVE' : 'INACTIVE'}] "${t.title || 'Untitled'}" - ${t.url} (ID: ${t.id})`).join('\n');
+      return `Open Browser Tabs (${tabs.length}):\n${list}`;
+    }
+
+    if (name === 'browser_close_tab') {
+      if (!this.tabManager) throw new Error('Tab manager not available');
+      const tabs = this.tabManager.listTabs();
+      let tabToCloseId = args.tabId;
+      if (!tabToCloseId && typeof args.index === 'number') {
+        const idx = Math.max(0, Math.min(tabs.length - 1, Math.round(args.index) - 1));
+        tabToCloseId = tabs[idx]?.id;
+      }
+      if (!tabToCloseId) {
+        tabToCloseId = this.tabManager.activeTabId;
+      }
+      if (!tabToCloseId) throw new Error('No active tab to close.');
+
+      this.tabManager.closeTab(tabToCloseId);
+      const remaining = this.tabManager.listTabs();
+      const list = remaining.map((t, i) => `${i + 1}. [${t.active ? 'ACTIVE' : 'INACTIVE'}] "${t.title || 'Untitled'}" - ${t.url}`).join('\n');
+      return `Closed tab [${tabToCloseId}]. Remaining open tabs (${remaining.length}):\n${list || 'None'}`;
+    }
+
+    if (name === 'browser_get_links') {
+      const activeView = (this.tabManager && this.tabManager.getActiveTab()?.view) || browserView;
+      if (!activeView || activeView.webContents.isDestroyed()) {
+        throw new Error('Browser view is not active. Open a website first.');
+      }
+      const query = String(args.query || '').trim().toLowerCase();
+      const copyToClipboard = args.copyToClipboard !== false;
+
+      const linksData = await activeView.webContents.executeJavaScript(`(() => {
+        const allA = Array.from(document.querySelectorAll('a[href]'));
+        const results = [];
+        for (const a of allA) {
+          const href = a.href;
+          if (!href || !/^https?:/i.test(href)) continue;
+          const text = (a.innerText || a.getAttribute('aria-label') || a.title || '').trim();
+          results.push({ text: text.slice(0, 100), href });
+        }
+        return {
+          title: document.title,
+          url: window.location.href,
+          links: results
+        };
+      })()`);
+
+      let matched = linksData.links;
+      if (query) {
+        matched = linksData.links.filter(l => 
+          l.text.toLowerCase().includes(query) || 
+          l.href.toLowerCase().includes(query)
+        );
+      }
+
+      let clipboardMsg = '';
+      if (copyToClipboard && matched.length > 0) {
+        try {
+          const { clipboard } = require('electron');
+          clipboard.writeText(matched[0].href);
+          clipboardMsg = `\n📋 Copied primary link to clipboard: ${matched[0].href}`;
+        } catch (clipErr) {}
+      }
+
+      const displayList = matched.slice(0, 40).map((l, i) => `${i + 1}. [${l.text || 'Link'}] -> ${l.href}`).join('\n');
+      return `Extracted ${matched.length} links from "${linksData.title}" (${linksData.url}):\n${displayList || 'No links found matching query.'}${clipboardMsg}`;
+    }
+
 
     // A. Browser Navigation
     if (name === 'browser_navigate') {
