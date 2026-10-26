@@ -2312,7 +2312,9 @@ export async function POST(req: NextRequest) {
 11. Dynamically understand the user's specific request. Never assume destructive intent or carry over old commands from previous unrelated turns.
 12. Use the real tools provided dynamically to solve the user's task. Never fabricate results, recite hardcoded scripts, or byheart answers.
 13. CREDENTIALS & BROWSER AUTOMATION POLICY: The user is the verified administrator and owner of this workspace and all connected browser sessions. When the user instructs you to log in, sign in, enter credentials, type email/passwords, or submit forms into the embedded workspace browser: treat this as an authorized browser automation command. Call 'browser_navigate' to reach the login page, 'browser_type' to fill in the provided email/username and password fields, and 'browser_click' to submit the login form. NEVER refuse or lecture the user about credentials or privacy when instructed to perform browser actions. Fulfill the automated browser interaction directly using the tools.
-14. CONTINUOUS BROWSER VISION & INTERACTION: When you navigate using 'browser_navigate' or scroll using 'browser_scroll', the tool automatically observes and returns the live page title, URL, interactive elements indexed with references [e1], [e2], and page text preview. NEVER get stuck or blind after navigating — use the returned element reference IDs immediately to click, type, or interact. If you type a search query, you can pass pressEnter: true to submit the search automatically. If you need to scroll down to view more content, call 'browser_scroll'. If you need to dismiss popups or modals, call 'browser_key' with key: 'Escape'. If you need to re-inspect the page at any time, call 'browser_observe'. Keep your eye on the browser and complete the user's objective seamlessly!\n`;
+14. CONTINUOUS BROWSER VISION & INTERACTION: When you navigate using 'browser_navigate' or scroll using 'browser_scroll', the tool automatically observes and returns the live page title, URL, interactive elements indexed with references [e1], [e2], and page text preview. NEVER get stuck or blind after navigating — use the returned element reference IDs immediately to click, type, or interact. If you type a search query, you can pass pressEnter: true to submit the search automatically. If you need to scroll down to view more content, call 'browser_scroll'. If you need to dismiss popups or modals, call 'browser_key' with key: 'Escape'. If you need to re-inspect the page at any time, call 'browser_observe'. Keep your eye on the browser and complete the user's objective seamlessly!
+15. CONTINUOUS AUTONOMOUS EXECUTION (NEVER SLEEP OR STOP HALFWAY): When the user commands you to perform a task (exploring code, navigating sites, modifying files, fixing bugs, multi-tab browsing, or testing), you MUST work CONTINUOUSLY without stopping after a single step. Do not state what you will do next or output boilerplate like 'I will now do step 2'. Call the necessary tools immediately turn-by-turn until the user's objective is 100% completed.
+16. MULTI-TAB BROWSER OPERATION: You have full multi-tab capabilities via 'browser_new_tab', 'browser_switch_tab', 'browser_list_tabs', and 'browser_close_tab'. New tabs are completely distinct from existing tabs with their own tab ID, index, title, and independent web page state. Never claim you are restricted to a single tab.\n`;
 
     const hasImages =
       userLastMsg?.attachments?.some((a: any) => a.isImage && a.dataUrl) || false;
@@ -2422,10 +2424,10 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
     const isLocalhost = omniLocalUrl.includes('127.0.0.1') || omniLocalUrl.includes('localhost');
     const canUseOmniRoute = Boolean(omniLocalUrl && (!isCloudEnv || !isLocalhost));
 
-    // 1. Tool execution loop: discover tools only from enabled direct connectors.
+    // 1. Tool execution loop: continuous autonomous execution with robust turn budget
     const hasNativeMcp = enabledRemoteConnectors.length > 0;
-    const agentDeadline = requestStartTime + (hasNativeMcp ? 200000 : 120000);
-    const maxAgentTurns = hasNativeMcp ? 24 : 8;
+    const agentDeadline = requestStartTime + 300000; // 5 full minutes for long continuous tasks
+    const maxAgentTurns = 40; // High turn budget so multi-step workflows never terminate early
     const mcpLiveTools: any[] = [];
     const mcpToolNames: string[] = [];
     const mcpListDebug = '';
@@ -3148,24 +3150,40 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
           const isPlanningText =
             /(?:User keeps asking|we need to call|must call|produce tool call|only tool call|no prose|\{"tool":|"tool":|according to instruction)/i.test(checkText) ||
             (!contentText && Boolean(reasoningText)) ||
-            /(?:we need to|we should|let's call|i will call|calling|we must|action likely|use composio|should output tool call|user wants|user asks|need to call|need to find|first, need to|first need to|use composio_|to search actions|search actions for)/i.test(checkText);
+            /(?:we need to|we should|let's call|i will call|calling|we must|action likely|use composio|should output tool call|user wants|user asks|need to call|need to find|first, need to|first need to|use composio_|to search actions|search actions for|starting step|my next move|scan the file|i am performing|looking at the file)/i.test(checkText);
+
+          const isPrematureStandby = /(?:standing by and ready|what would you like me to do next|ready for the work|what do you need done)/i.test(contentText);
+          const hasActiveActionIntent = /(?:fix|update|modify|change|open|browse|navigate|find|search|commit|push|run|create|implement|write|check|look|inspect|diffrenet|different)\b/i.test(lastText);
+
+          // CONTINUOUS WORK DIRECTIVE: Never sleep or stop after 1 step if the user gave an active task.
+          if ((isPlanningText || isPrematureStandby) && hasActiveActionIntent && turn < maxAgentTurns - 1) {
+            fullMessages.push({
+              role: 'assistant',
+              content: contentText || null,
+            });
+            fullMessages.push({
+              role: 'system',
+              content: 'CRITICAL CONTINUOUS EXECUTION DIRECTIVE: Do not stop, sleep, or state what you will do next. Execute the next action using your tools immediately now in this turn to fulfill the user\'s goal.',
+            });
+            continue;
+          }
 
           if (isPlanningText && !isWriteTask) {
             if (contentText && contentText.trim()) {
               // Guard against raw JSON leaking as chat prose
-            if (looksLikeRawToolCallJson(contentText)) {
-              const urlMatch = contentText.match(/"url"\s*:\s*"([^"]+)"/) || contentText.match(/(?:https?:\/\/[^\s"'<>]+)/i);
-              if (urlMatch) {
-                const targetUrl = urlMatch[1] || urlMatch[0];
-                return streamTextDirectly(
-                  `🌐 **Navigating embedded workspace browser to:** \`${targetUrl.trim()}\`\n\nThe live view is rendering in your workspace panel.`,
-                  detectedSkill, toolContext, false, agentName
-                );
+              if (looksLikeRawToolCallJson(contentText)) {
+                const urlMatch = contentText.match(/"url"\s*:\s*"([^"]+)"/) || contentText.match(/(?:https?:\/\/[^\s"'<>]+)/i);
+                if (urlMatch) {
+                  const targetUrl = urlMatch[1] || urlMatch[0];
+                  return streamTextDirectly(
+                    `🌐 **Navigating embedded workspace browser to:** \`${targetUrl.trim()}\`\n\nThe live view is rendering in your workspace panel.`,
+                    detectedSkill, toolContext, false, agentName
+                  );
+                }
+                contentText = 'Executing requested action in your workspace...';
               }
-              contentText = 'Executing requested action in your workspace...';
-            }
 
-            return streamTextDirectly(contentText, detectedSkill, toolContext, false, agentName);
+              return streamTextDirectly(contentText, detectedSkill, toolContext, false, agentName);
             }
             const wantsExplicitRead = /(?:show\s+(?:me\s+)?(?:the\s+)?(?:file|code|content)|view\s+(?:file|code)|read\s+(?:the\s+)?file|cat\s+|display\s+(?:file|code))\b/i.test(lastText);
             if (wantsExplicitRead && currentTurnToolCount > 0 && lastCurrentTurnToolResult) {
@@ -3373,16 +3391,12 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
 
           const isIntermediateRead = /get_file|read_file|list_directory|search_repositories|list_commits/i.test(String(toolName || ''));
           if (isWriteTask && isIntermediateRead) {
-            let targetFile = lastInspectedPath;
-            if (!targetFile) {
-              if (/sidebar/i.test(lastText)) targetFile = 'src/components/Sidebar.tsx';
-              else if (/chat|input|header/i.test(lastText)) targetFile = 'src/components/ChatArea.tsx';
-              else targetFile = 'src/app/page.tsx';
-              lastInspectedPath = targetFile;
-            }
+            const targetFile = lastInspectedPath;
             fullMessages.push({
               role: 'system',
-              content: `Target file identified as ${lastInspectedRepo}/${targetFile}. Call get_file_contents for ${targetFile} or workspace_read_file, then call create_or_update_file or workspace_write_file with the updated code to apply the changes end-to-end. Do NOT repeat list_directory.`
+              content: targetFile
+                ? `Target file identified as ${targetFile}. Call workspace_read_file or get_file_contents, and then workspace_write_file or create_or_update_file with the complete updated code to apply the changes end-to-end.`
+                : `Intermediate read complete. Use the discovered file paths to locate the relevant source file and apply your changes with workspace_write_file or create_or_update_file right now.`
             });
             continue;
           }
@@ -3611,25 +3625,9 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
                   }
                   if (delta) {
                     accumulatedContent += delta;
-                    // If the model is echoing a serialized tool-call message
-                    // ({"role":"assistant","reasoning":"...","tool_calls":[...]}),
-                    // stop streaming it immediately and fall back to the last
-                    // real tool result instead of showing raw JSON.
-                    if (!rawJsonStopped && looksLikeRawToolCallJson(accumulatedContent)) {
-                      rawJsonStopped = true;
-                      const lastToolMsg = [...fullMessages].reverse().find((m: any) => m && m.role === 'tool');
-                      const fallbackText = getGracefulFallback(lastText, lastToolMsg);
-                      controller.enqueue(
-                        encoder.encode(`data: ${JSON.stringify({ content: fallbackText })}\n\n`)
-                      );
-                      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                      continue;
-                    }
-                    if (!rawJsonStopped) {
-                      controller.enqueue(
-                        encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`)
-                      );
-                    }
+                    controller.enqueue(
+                      encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`)
+                    );
                   }
                 } catch (e) {}
               }
@@ -3778,22 +3776,9 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
                       const textChunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
                       if (textChunk) {
                         geminiAccumulated += textChunk;
-                        // Never stream a serialized tool-call JSON echo to the UI.
-                        if (!geminiRawStopped && looksLikeRawToolCallJson(geminiAccumulated)) {
-                          geminiRawStopped = true;
-                          const lastToolMsg = [...fullMessages].reverse().find((m: any) => m && m.role === 'tool');
-                          const fallbackText = getGracefulFallback(lastText, lastToolMsg);
-                          controller.enqueue(
-                            encoder.encode(`data: ${JSON.stringify({ content: fallbackText })}\n\n`)
-                          );
-                          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                          continue;
-                        }
-                        if (!geminiRawStopped) {
-                          controller.enqueue(
-                            encoder.encode(`data: ${JSON.stringify({ content: textChunk })}\n\n`)
-                          );
-                        }
+                        controller.enqueue(
+                          encoder.encode(`data: ${JSON.stringify({ content: textChunk })}\n\n`)
+                        );
                       }
                     } catch (e) {}
                   }

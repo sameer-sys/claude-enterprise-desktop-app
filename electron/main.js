@@ -153,6 +153,103 @@ function createWindow() {
     }
   });
 
+  const NEW_TAB_DASHBOARD = `data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>New Tab</title>
+  <style>
+    body {
+      margin: 0;
+      background: #141310;
+      color: #ece9e2;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      box-sizing: border-box;
+      padding: 24px;
+    }
+    .logo {
+      font-size: 26px;
+      font-weight: 700;
+      color: #cc785c;
+      margin-bottom: 24px;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .search-box {
+      width: 100%;
+      max-width: 520px;
+      margin-bottom: 32px;
+    }
+    input {
+      width: 100%;
+      padding: 13px 18px;
+      border-radius: 12px;
+      background: #1c1b17;
+      border: 1px solid #38352d;
+      color: #ece9e2;
+      font-size: 14px;
+      box-sizing: border-box;
+      outline: none;
+      transition: all 0.2s;
+    }
+    input:focus {
+      border-color: #cc785c;
+      box-shadow: 0 0 0 2px rgba(204,120,92,0.2);
+    }
+    .shortcuts {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .shortcut {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-decoration: none;
+      color: #a09b8f;
+      font-size: 11.5px;
+      padding: 12px 18px;
+      border-radius: 10px;
+      background: #1c1b17;
+      border: 1px solid #2e2c25;
+      transition: all 0.2s;
+      min-width: 68px;
+    }
+    .shortcut:hover {
+      background: #26241e;
+      color: #ece9e2;
+      border-color: #cc785c;
+      transform: translateY(-2px);
+    }
+    .shortcut-icon {
+      font-size: 20px;
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo"><span>⚡</span> New Tab</div>
+  <form class="search-box" onsubmit="event.preventDefault(); const q = document.getElementById('q').value.trim(); if (!q) return; window.location.href = (q.includes('.') && !q.includes(' ')) ? (q.startsWith('http') ? q : 'https://' + q) : 'https://www.google.com/search?q=' + encodeURIComponent(q);">
+    <input id="q" type="text" placeholder="Search the web or type a URL..." autofocus />
+  </form>
+  <div class="shortcuts">
+    <a class="shortcut" href="https://github.com"><span class="shortcut-icon">🐙</span><span>GitHub</span></a>
+    <a class="shortcut" href="https://www.google.com"><span class="shortcut-icon">🔍</span><span>Google</span></a>
+    <a class="shortcut" href="https://www.youtube.com"><span class="shortcut-icon">▶️</span><span>YouTube</span></a>
+    <a class="shortcut" href="https://linear.app"><span class="shortcut-icon">📐</span><span>Linear</span></a>
+    <a class="shortcut" href="https://x.com"><span class="shortcut-icon">𝕏</span><span>X</span></a>
+  </div>
+</body>
+</html>`)}`;
+
   // OpenWork Native Multi-Tab Browser Control (Embedded WebContentsView / BrowserView)
   class BrowserTabManager {
     constructor(getMainWindow) {
@@ -163,9 +260,13 @@ function createWindow() {
       this.isAttached = false;
     }
 
-    createTab(url = "https://github.com", makeActive = true) {
+    createTab(url, makeActive = true) {
+      const tabNumber = this.tabs.length + 1;
       const tabId = "tab_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
-      const targetUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+      const isBlankOrNew = !url || url === "about:blank" || url === "newtab" || url === "new_tab";
+      const targetUrl = isBlankOrNew
+        ? NEW_TAB_DASHBOARD
+        : (/^https?:\/\/|^data:/i.test(url) ? url : `https://${url}`);
 
       const viewOptions = {
         webPreferences: {
@@ -192,7 +293,7 @@ function createWindow() {
         const tab = this.tabs.find((t) => t.id === tabId);
         if (tab) {
           tab.url = navUrl;
-          tab.title = contents.getTitle() || navUrl;
+          tab.title = navUrl.startsWith("data:") ? `New Tab #${tabNumber}` : (contents.getTitle() || navUrl);
           this.notifyState();
         }
       });
@@ -202,7 +303,7 @@ function createWindow() {
         const tab = this.tabs.find((t) => t.id === tabId);
         if (tab) {
           tab.url = navUrl;
-          tab.title = contents.getTitle() || navUrl;
+          tab.title = navUrl.startsWith("data:") ? `New Tab #${tabNumber}` : (contents.getTitle() || navUrl);
           this.notifyState();
         }
       });
@@ -210,7 +311,7 @@ function createWindow() {
       contents.on("page-title-updated", (_event, title) => {
         const tab = this.tabs.find((t) => t.id === tabId);
         if (tab) {
-          tab.title = title;
+          tab.title = title || `Tab #${tabNumber}`;
           this.notifyState();
         }
       });
@@ -228,7 +329,7 @@ function createWindow() {
         id: tabId,
         view,
         url: targetUrl,
-        title: "New Tab",
+        title: isBlankOrNew ? `New Tab #${tabNumber}` : "New Tab",
         createdAt: Date.now(),
       };
       this.tabs.push(tab);
@@ -452,13 +553,13 @@ function createWindow() {
 
   ipcMain.removeHandler("openwork:browser:createTab");
   ipcMain.handle("openwork:browser:createTab", (_event, url) => {
-    const tab = browserTabManager.createTab(url || "https://www.google.com", true);
+    const tab = browserTabManager.createTab(url || "newtab", true);
     return { success: true, tabId: tab.id, url: tab.url, title: tab.title };
   });
 
   ipcMain.removeHandler("openwork:browser:newTab");
   ipcMain.handle("openwork:browser:newTab", (_event, url) => {
-    const tab = browserTabManager.createTab(url || "https://www.google.com", true);
+    const tab = browserTabManager.createTab(url || "newtab", true);
     return { success: true, tabId: tab.id, url: tab.url, title: tab.title };
   });
 

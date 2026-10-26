@@ -350,7 +350,7 @@ export async function browserScreenshot(): Promise<string> {
 }
 
 export async function browserNewTab(url?: string): Promise<string> {
-  const target = url ? (/^https?:\/\//i.test(url) ? url : `https://${url}`) : 'https://www.google.com';
+  const target = url ? (/^https?:\/\/|^data:/i.test(url) ? url : `https://${url}`) : 'newtab';
   try {
     const res = await fetch('http://127.0.0.1:48080/api/execute-tool', {
       method: 'POST',

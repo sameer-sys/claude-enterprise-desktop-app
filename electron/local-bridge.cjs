@@ -973,8 +973,10 @@ class LocalBridgeServer {
 
     // A0. Browser Multi-Tab Management
     if (name === 'browser_new_tab') {
-      const targetUrl = String(args.url || 'https://www.google.com').trim();
-      const normalized = /^https?:\/\//i.test(targetUrl) ? targetUrl : `https://${targetUrl}`;
+      const targetUrl = args?.url ? String(args.url).trim() : 'newtab';
+      const normalized = (targetUrl === 'newtab' || targetUrl === 'about:blank')
+        ? targetUrl
+        : (/^https?:\/\//i.test(targetUrl) ? targetUrl : `https://${targetUrl}`);
 
       let newTab = null;
       if (this.tabManager) {
