@@ -1580,7 +1580,13 @@ class LocalBridgeServer {
       }
 
       if (activeView && !activeView.webContents.isDestroyed()) {
-        await activeView.webContents.loadURL(searchUrl);
+        try {
+          await activeView.webContents.loadURL(searchUrl);
+        } catch (loadErr) {
+          if (!loadErr.message?.includes('ERR_ABORTED')) {
+            throw loadErr;
+          }
+        }
         await new Promise(r => setTimeout(r, 1500));
         return `Searched ${engine} for "${query}". Current page: "${activeView.webContents.getTitle()}" (${searchUrl})`;
       }
