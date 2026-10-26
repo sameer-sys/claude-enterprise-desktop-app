@@ -698,8 +698,45 @@ class LocalBridgeServer {
               type: 'function',
               function: {
                 name: 'browser_click',
-                description: 'Click a button or link on the embedded browser by ref ID (e.g. "e1") or CSS selector.',
-                parameters: { type: 'object', properties: { ref: { type: 'string' }, selector: { type: 'string' } } }
+                description: 'Click an element, link, button, or video on the embedded browser by ref ID (e.g. "e1"), text query, CSS selector, or (x, y) coordinates.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    ref: { type: 'string', description: 'Reference ID from browser_observe (e.g. "e1", "e5")' },
+                    text: { type: 'string', description: 'Visible text of the element or button to click (e.g. "Play", "Sign in")' },
+                    selector: { type: 'string', description: 'CSS selector (e.g. "button.ytp-play-button", "#video-title")' },
+                    x: { type: 'number', description: 'Optional exact X coordinate in browser viewport' },
+                    y: { type: 'number', description: 'Optional exact Y coordinate in browser viewport' }
+                  }
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_play',
+                description: 'Start, resume, or play video/audio media on the active browser page (e.g. YouTube video, music, stream).',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    selector: { type: 'string', description: 'Optional CSS selector of the player or video element' }
+                  }
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'browser_search',
+                description: 'Directly search for a topic or video on YouTube, GitHub, Google, or Wikipedia in the embedded browser.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string', description: 'Search query (e.g. "lofi hip hop radio", "react 19 tutorials")' },
+                    engine: { type: 'string', enum: ['youtube', 'github', 'google', 'wikipedia'], description: 'Search platform (default: google)' }
+                  },
+                  required: ['query']
+                }
               }
             },
             {
@@ -707,7 +744,17 @@ class LocalBridgeServer {
               function: {
                 name: 'browser_type',
                 description: 'Type text into an input field on the embedded browser page, with optional Enter key press to submit search or form.',
-                parameters: { type: 'object', properties: { text: { type: 'string' }, ref: { type: 'string' }, selector: { type: 'string' }, pressEnter: { type: 'boolean', description: 'Press Enter immediately after typing (e.g. to submit search query)' } }, required: ['text'] }
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    text: { type: 'string', description: 'Text to type' },
+                    ref: { type: 'string', description: 'Reference ID from browser_observe (e.g. "e1")' },
+                    selector: { type: 'string', description: 'CSS selector (e.g. "input[name=q]")' },
+                    clearFirst: { type: 'boolean', description: 'Clear existing text before typing (default: true)' },
+                    pressEnter: { type: 'boolean', description: 'Press Enter immediately after typing (e.g. to submit search query)' }
+                  },
+                  required: ['text']
+                }
               }
             },
             {
@@ -1355,16 +1402,20 @@ class LocalBridgeServer {
       }
       const contents = activeView.webContents;
       const observation = await contents.executeJavaScript(`(() => {
-        const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+        const candidates = Array.from(document.querySelectorAll(
+          'a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], video, ytd-thumbnail, #video-title, [aria-label*="play" i], [aria-label*="search" i]'
+        ));
         const elements = [];
-        for (let i = 0; i < candidates.length && elements.length < 100; i++) {
+        for (let i = 0; i < candidates.length && elements.length < 120; i++) {
           const el = candidates[i];
           const rect = el.getBoundingClientRect();
           const style = window.getComputedStyle(el);
           if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+          const refId = 'e' + (elements.length + 1);
+          el.dataset.browserRef = refId;
           const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
           elements.push({
-            ref: 'e' + (elements.length + 1),
+            ref: refId,
             tag: el.tagName.toLowerCase(),
             name: label.slice(0, 150),
             href: el.href || undefined,
@@ -1385,7 +1436,7 @@ class LocalBridgeServer {
       return `URL: ${observation.url}\nTitle: ${observation.title}\n\nContent Snippet:\n${observation.textSnippet}\n\nInteractive Elements:\n${elementsList}`;
     }
 
-    // C. Browser Click (with Hit-Testing Obscurity Check & Coordinates)
+    // C. Browser Click (with Hit-Testing & Native Chromium Input Events)
     if (name === 'browser_click') {
       const activeView = getActiveView();
       if (!activeView || activeView.webContents.isDestroyed()) {
@@ -1397,24 +1448,29 @@ class LocalBridgeServer {
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
         } else if (${JSON.stringify(args.ref || null)}) {
-          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
-          const visible = candidates.filter(item => {
-            const r = item.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          });
-          const idx = parseInt(String(${JSON.stringify(args.ref)}).replace(/^e/i, '')) - 1;
-          el = visible[idx];
+          const refStr = String(${JSON.stringify(args.ref)}).trim();
+          el = document.querySelector(\`[data-browser-ref="\${refStr}"]\`);
+          if (!el) {
+            const idx = parseInt(refStr.replace(/^e/i, '')) - 1;
+            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], video, ytd-thumbnail, #video-title'));
+            el = candidates[idx];
+          }
+        } else if (${JSON.stringify(args.text || null)}) {
+          const searchTxt = String(${JSON.stringify(args.text)}).toLowerCase().trim();
+          const all = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, h1, h2, h3, #video-title'));
+          el = all.find(item => item.innerText && item.innerText.toLowerCase().includes(searchTxt));
         }
+
+        if (!el && ${Boolean(args.x !== undefined && args.y !== undefined)}) {
+          return { success: true, clicked: 'coordinates', text: 'coordinates', x: ${Number(args.x || 0)}, y: ${Number(args.y || 0)} };
+        }
+
         if (!el) return { success: false, error: 'Element not found on page' };
 
         el.scrollIntoView({ behavior: 'instant', block: 'center' });
         const rect = el.getBoundingClientRect();
         const x = rect.x + rect.width / 2;
         const y = rect.y + rect.height / 2;
-
-        // Obscurity Check: verify no floating modal/cookie banner is covering the element
-        const topEl = document.elementFromPoint(x, y);
-        const isObscured = topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el);
 
         el.focus();
         el.click();
@@ -1423,19 +1479,112 @@ class LocalBridgeServer {
           success: true,
           clicked: el.tagName.toLowerCase(),
           text: (el.innerText || el.value || el.getAttribute('aria-label') || '').slice(0, 60),
-          obscured: isObscured,
-          obscuredBy: isObscured ? topEl.tagName.toLowerCase() : null,
           x: Math.round(x),
           y: Math.round(y)
         };
       })()`);
 
       if (!res.success) return `Click failed: ${res.error}`;
+
+      // Dispatch native Chromium pointer events at coordinates for guaranteed trigger
+      if (res.x !== undefined && res.y !== undefined) {
+        try {
+          contents.sendInputEvent({ type: 'mouseMove', x: res.x, y: res.y });
+          contents.sendInputEvent({ type: 'mouseDown', x: res.x, y: res.y, button: 'left', clickCount: 1 });
+          contents.sendInputEvent({ type: 'mouseUp', x: res.x, y: res.y, button: 'left', clickCount: 1 });
+        } catch (e) {}
+      }
+
       await new Promise(r => setTimeout(r, 800));
       const currentUrl = contents.getURL();
       const currentTitle = contents.getTitle();
-      const obscureNote = res.obscured ? ` (Note: element had an overlay: <${res.obscuredBy}>)` : '';
-      return `Clicked ${res.clicked} ("${res.text}")${obscureNote}. Current Page: "${currentTitle}" (${currentUrl})`;
+      return `Clicked ${res.clicked} ("${res.text}"). Current Page: "${currentTitle}" (${currentUrl})`;
+    }
+
+    // C2. Browser Play (Video / Audio / Media playback)
+    if (name === 'browser_play') {
+      const activeView = getActiveView();
+      if (!activeView || activeView.webContents.isDestroyed()) {
+        throw new Error('Browser view is not active');
+      }
+      const contents = activeView.webContents;
+      const playRes = await contents.executeJavaScript(`(() => {
+        // 1. Try HTML5 video or audio elements
+        const media = Array.from(document.querySelectorAll('video, audio'));
+        for (const m of media) {
+          try {
+            m.muted = false;
+            const p = m.play();
+            if (p !== undefined) p.catch(() => { m.muted = true; m.play(); });
+            return { success: true, method: 'video.play()' };
+          } catch (e) {}
+        }
+
+        // 2. Try YouTube specific play button
+        const ytpPlay = document.querySelector('button.ytp-play-button, ytd-player, .html5-video-player, ytd-watch-flexy');
+        if (ytpPlay) {
+          ytpPlay.click();
+          return { success: true, method: 'ytp-play-button' };
+        }
+
+        // 3. Try clicking first video thumbnail if on search results
+        const firstThumb = document.querySelector('ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail, a[href*="/watch?v="]');
+        if (firstThumb) {
+          firstThumb.click();
+          return { success: true, method: 'clicked first video thumbnail' };
+        }
+
+        // 4. Try any button matching "Play"
+        const playBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b =>
+          /play/i.test(b.getAttribute('aria-label') || b.innerText || '')
+        );
+        if (playBtn) {
+          playBtn.click();
+          return { success: true, method: 'play button' };
+        }
+
+        return { success: false, error: 'No media player or video found' };
+      })()`);
+
+      // Also send spacebar and 'k' keys to trigger standard media playback
+      contents.sendInputEvent({ type: 'keyDown', keyCode: 'k' });
+      contents.sendInputEvent({ type: 'keyUp', keyCode: 'k' });
+
+      await new Promise(r => setTimeout(r, 1000));
+      return playRes.success
+        ? `▶️ Started media playback via ${playRes.method} on "${contents.getTitle()}".`
+        : `Sent play command (Key: k / Space) to media player on "${contents.getTitle()}".`;
+    }
+
+    // C3. Browser Search (YouTube, GitHub, Google, Wikipedia)
+    if (name === 'browser_search') {
+      const query = String(args.query || '').trim();
+      const engine = String(args.engine || 'google').toLowerCase();
+      let searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+      if (engine === 'youtube') {
+        searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+      } else if (engine === 'github') {
+        searchUrl = `https://github.com/search?q=${encodeURIComponent(query)}`;
+      } else if (engine === 'wikipedia') {
+        searchUrl = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(query)}`;
+      }
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('openwork:browser:open-panel', { url: searchUrl });
+      }
+
+      let activeView = getActiveView();
+      if (!activeView && this.tabManager) {
+        const newTab = this.tabManager.createTab(searchUrl, true);
+        activeView = newTab ? newTab.view : null;
+      }
+
+      if (activeView && !activeView.webContents.isDestroyed()) {
+        await activeView.webContents.loadURL(searchUrl);
+        await new Promise(r => setTimeout(r, 1500));
+        return `Searched ${engine} for "${query}". Current page: "${activeView.webContents.getTitle()}" (${searchUrl})`;
+      }
+      return `Navigated browser to ${searchUrl}`;
     }
 
     // D. Browser Type (Native Input + Keystrokes)
@@ -1447,6 +1596,7 @@ class LocalBridgeServer {
       const contents = activeView.webContents;
       const text = String(args.text || '');
       const pressEnter = args.pressEnter === true;
+      const clearFirst = args.clearFirst !== false;
 
       // 1. Focus element and select existing text in DOM
       const prepRes = await contents.executeJavaScript(`(() => {
@@ -1454,17 +1604,29 @@ class LocalBridgeServer {
         if (${JSON.stringify(args.selector || null)}) {
           el = document.querySelector(${JSON.stringify(args.selector)});
         } else if (${JSON.stringify(args.ref || null)}) {
-          const candidates = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]'));
-          const idx = parseInt(String(${JSON.stringify(args.ref)}).replace(/^e/i, '')) - 1;
-          el = candidates[idx] || document.querySelector('input, textarea');
+          const ref = ${JSON.stringify(args.ref)};
+          el = document.querySelector('[data-browser-ref="' + ref + '"]');
+          if (!el) {
+            const candidates = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"]'));
+            const idx = parseInt(String(ref).replace(/^e/i, '')) - 1;
+            el = candidates[idx] || document.querySelector('input, textarea');
+          }
         } else {
           el = document.activeElement || document.querySelector('input, textarea');
         }
         if (!el) return { success: false, error: 'No input field found' };
 
         el.focus();
-        if (typeof el.select === 'function') el.select();
-        else if (el.isContentEditable) document.getSelection()?.selectAllChildren(el);
+        if (${JSON.stringify(clearFirst)}) {
+          if (typeof el.select === 'function') el.select();
+          if (el.value !== undefined) el.value = '';
+          else if (el.isContentEditable) el.innerText = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          if (typeof el.select === 'function') el.select();
+          else if (el.isContentEditable) document.getSelection()?.selectAllChildren(el);
+        }
 
         return { success: true, tag: el.tagName.toLowerCase() };
       })()`);
