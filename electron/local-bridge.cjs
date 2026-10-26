@@ -769,6 +769,92 @@ class LocalBridgeServer {
                 description: 'Write or edit a local file on the machine.',
                 parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] }
               }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_mouse_move',
+                description: 'Move the physical mouse cursor across the screen to coordinates (x, y) using smooth natural human motion.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number', description: 'X pixel coordinate on screen' },
+                    y: { type: 'number', description: 'Y pixel coordinate on screen' },
+                    smooth: { type: 'boolean', description: 'Whether to use smooth human-like Bezier curve movement (defaults to true)' }
+                  },
+                  required: ['x', 'y']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_mouse_click',
+                description: 'Click the mouse at specified coordinates (or current cursor position). Supports left, right, middle, and double click with realistic human micro-delays.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number', description: 'X pixel coordinate to click' },
+                    y: { type: 'number', description: 'Y pixel coordinate to click' },
+                    button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button to click (default: left)' },
+                    doubleClick: { type: 'boolean', description: 'Perform double click (default: false)' }
+                  },
+                  required: ['x', 'y']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_mouse_drag',
+                description: 'Drag mouse from (fromX, fromY) to (toX, toY) while holding the mouse button down.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    fromX: { type: 'number', description: 'Starting X coordinate' },
+                    fromY: { type: 'number', description: 'Starting Y coordinate' },
+                    toX: { type: 'number', description: 'Ending X coordinate' },
+                    toY: { type: 'number', description: 'Ending Y coordinate' }
+                  },
+                  required: ['fromX', 'fromY', 'toX', 'toY']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_type',
+                description: 'Type text into the currently active/focused window on the operating system with natural human keystroke cadence.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    text: { type: 'string', description: 'Text string to type' }
+                  },
+                  required: ['text']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_hotkey',
+                description: 'Press keyboard shortcuts or special keys (e.g., "ctrl+c", "ctrl+v", "alt+tab", "enter", "escape", "tab", "win+d").',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    keys: { type: 'string', description: 'Key combination (e.g. "ctrl+c", "enter", "alt+f4")' }
+                  },
+                  required: ['keys']
+                }
+              }
+            },
+            {
+              type: 'function',
+              function: {
+                name: 'system_get_cursor_pos',
+                description: 'Get current (x, y) coordinates of the physical mouse cursor on screen.',
+                parameters: { type: 'object', properties: {} }
+              }
             }
           ];
 
@@ -1586,6 +1672,62 @@ class LocalBridgeServer {
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
       fs.writeFileSync(targetPath, String(args.content || ''), 'utf8');
       return `File written successfully to ${targetPath}`;
+    }
+
+    // J. Native System Mouse & Keyboard Automation
+    const runSystemInput = (cmdArgs) => {
+      const { execFileSync } = require('child_process');
+      const binCandidates = [
+        path.join(__dirname, 'bin', 'SystemInputController.exe'),
+        path.join(process.resourcesPath || '', 'bin', 'SystemInputController.exe'),
+        path.join(__dirname, 'SystemInputController.exe')
+      ];
+      let binPath = binCandidates.find(c => fs.existsSync(c)) || binCandidates[0];
+      const res = execFileSync(binPath, cmdArgs, { encoding: 'utf8', timeout: 15000 });
+      return JSON.parse(res.trim());
+    };
+
+    if (name === 'system_get_cursor_pos') {
+      const res = runSystemInput(['pos']);
+      return `Mouse cursor position: x=${res.x}, y=${res.y}`;
+    }
+
+    if (name === 'system_mouse_move') {
+      const x = Math.round(Number(args.x));
+      const y = Math.round(Number(args.y));
+      const smooth = args.smooth !== false ? 'smooth' : 'instant';
+      const res = runSystemInput(['move', String(x), String(y), smooth]);
+      return `Moved mouse cursor to (${res.x}, ${res.y}) [smooth=${smooth}]`;
+    }
+
+    if (name === 'system_mouse_click') {
+      const x = Math.round(Number(args.x));
+      const y = Math.round(Number(args.y));
+      const button = String(args.button || 'left').toLowerCase();
+      const dbl = args.doubleClick === true ? 'double' : 'single';
+      const res = runSystemInput(['click', String(x), String(y), button, dbl]);
+      return `Clicked mouse ${button} button at (${res.x}, ${res.y}) [double=${args.doubleClick === true}]`;
+    }
+
+    if (name === 'system_mouse_drag') {
+      const x1 = Math.round(Number(args.fromX));
+      const y1 = Math.round(Number(args.fromY));
+      const x2 = Math.round(Number(args.toX));
+      const y2 = Math.round(Number(args.toY));
+      const res = runSystemInput(['drag', String(x1), String(y1), String(x2), String(y2)]);
+      return `Dragged mouse from (${x1}, ${y1}) to (${x2}, ${y2})`;
+    }
+
+    if (name === 'system_type') {
+      const text = String(args.text || '');
+      const res = runSystemInput(['type', text]);
+      return `Typed ${text.length} characters into active window`;
+    }
+
+    if (name === 'system_hotkey') {
+      const keys = String(args.keys || '');
+      const res = runSystemInput(['hotkey', keys]);
+      return `Executed keyboard hotkey: ${keys}`;
     }
 
     throw new Error(`Unknown tool: ${name}`);

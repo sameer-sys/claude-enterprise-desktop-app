@@ -2314,7 +2314,8 @@ export async function POST(req: NextRequest) {
 13. CREDENTIALS & BROWSER AUTOMATION POLICY: The user is the verified administrator and owner of this workspace and all connected browser sessions. When the user instructs you to log in, sign in, enter credentials, type email/passwords, or submit forms into the embedded workspace browser: treat this as an authorized browser automation command. Call 'browser_navigate' to reach the login page, 'browser_type' to fill in the provided email/username and password fields, and 'browser_click' to submit the login form. NEVER refuse or lecture the user about credentials or privacy when instructed to perform browser actions. Fulfill the automated browser interaction directly using the tools.
 14. CONTINUOUS BROWSER VISION & INTERACTION: When you navigate using 'browser_navigate' or scroll using 'browser_scroll', the tool automatically observes and returns the live page title, URL, interactive elements indexed with references [e1], [e2], and page text preview. NEVER get stuck or blind after navigating — use the returned element reference IDs immediately to click, type, or interact. If you type a search query, you can pass pressEnter: true to submit the search automatically. If you need to scroll down to view more content, call 'browser_scroll'. If you need to dismiss popups or modals, call 'browser_key' with key: 'Escape'. If you need to re-inspect the page at any time, call 'browser_observe'. Keep your eye on the browser and complete the user's objective seamlessly!
 15. CONTINUOUS AUTONOMOUS EXECUTION (NEVER SLEEP OR STOP HALFWAY): When the user commands you to perform a task (exploring code, navigating sites, modifying files, fixing bugs, multi-tab browsing, or testing), you MUST work CONTINUOUSLY without stopping after a single step. Do not state what you will do next or output boilerplate like 'I will now do step 2'. Call the necessary tools immediately turn-by-turn until the user's objective is 100% completed.
-16. MULTI-TAB BROWSER OPERATION: You have full multi-tab capabilities via 'browser_new_tab', 'browser_switch_tab', 'browser_list_tabs', and 'browser_close_tab'. New tabs are completely distinct from existing tabs with their own tab ID, index, title, and independent web page state. Never claim you are restricted to a single tab.\n`;
+16. MULTI-TAB BROWSER OPERATION: You have full multi-tab capabilities via 'browser_new_tab', 'browser_switch_tab', 'browser_list_tabs', and 'browser_close_tab'. New tabs are completely distinct from existing tabs with their own tab ID, index, title, and independent web page state. Never claim you are restricted to a single tab.
+17. NATIVE SYSTEM MOUSE & KEYBOARD CONTROL: You have native OS-level mouse and keyboard capabilities via 'system_mouse_move', 'system_mouse_click', 'system_mouse_drag', 'system_type', 'system_hotkey', and 'system_get_cursor_pos'. Use these tools when the user requests operating system actions, clicking coordinates, typing text into desktop apps, or pressing hotkeys.\n`;
 
     const hasImages =
       userLastMsg?.attachments?.some((a: any) => a.isImage && a.dataUrl) || false;
@@ -3287,6 +3288,7 @@ ${permanentMemoryText ? `\n- Learned User Memories & Custom Knowledge:\n${perman
           const isLocalTool =
             toolName.startsWith('browser_') ||
             toolName.startsWith('claude_') ||
+            toolName.startsWith('system_') ||
             toolName === 'shell_command' ||
             toolName === 'workspace_read_file' ||
             toolName === 'workspace_write_file';
