@@ -1,23 +1,29 @@
 ;
 import { randomBytes } from "node:crypto";
-
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 
+// Load configuration from browser-config.json
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CONFIG = JSON.parse(readFileSync(join(__dirname, "browser-config.json"), "utf8"));
+
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
-const MAX_FRAMES_PER_TAB = 64;
-const MAX_TOOLS_PER_FRAME = 32;
-const MAX_TOOLS_PER_TAB = 128;
-const MAX_TITLE_LENGTH = 256;
-const MAX_DESCRIPTION_LENGTH = 4_096;
+const MAX_FRAMES_PER_TAB = CONFIG.webmcp.maxFramesPerTab;
+const MAX_TOOLS_PER_FRAME = CONFIG.webmcp.maxToolsPerFrame;
+const MAX_TOOLS_PER_TAB = CONFIG.webmcp.maxToolsPerTab;
+const MAX_TITLE_LENGTH = CONFIG.webmcp.maxTitleLength;
+const MAX_DESCRIPTION_LENGTH = CONFIG.webmcp.maxDescriptionLength;
 const MAX_SCHEMA_BYTES = 64 * 1024;
 const MAX_SCHEMA_DEPTH = 32;
 const MAX_SCHEMA_NODES = 5_000;
 const MAX_INPUT_BYTES = 128 * 1024;
 const MAX_RESULT_BYTES = 256 * 1024;
-const DEFAULT_DISCOVERY_TIMEOUT_MS = 3_000;
-const DEFAULT_EXECUTION_TIMEOUT_MS = 60_000;
-const MAX_ACTIVE_EXECUTIONS_PER_TAB = 4;
-const TRUST_LABEL = "untrusted-site-content";
+const DEFAULT_DISCOVERY_TIMEOUT_MS = CONFIG.webmcp.discoveryTimeoutMs;
+const DEFAULT_EXECUTION_TIMEOUT_MS = CONFIG.webmcp.executionTimeoutMs;
+const MAX_ACTIVE_EXECUTIONS_PER_TAB = CONFIG.webmcp.maxActiveExecutionsPerTab;
+const TRUST_LABEL = CONFIG.webmcp.trustLabel;
 
 const Ajv2020Constructor = /** @type {any} */ (Ajv2020);
 const schemaValidator = new Ajv2020Constructor({

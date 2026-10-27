@@ -1,0 +1,87 @@
+{
+  "browser": {
+    "defaultUrl": "about:blank",
+    "newTabUrl": "https://www.google.com",
+    "maxTabs": 12,
+    "maxClosedTabs": 20,
+    "targetResolveTimeoutMs": 2500
+  },
+  "backgroundTabs": {
+    "maxBackgroundTabs": 10,
+    "suspendDelayMs": 300000,
+    "thumbnailIntervalMs": 30000,
+    "thumbnailSize": { "width": 320, "height": 200 },
+    "thumbnailQuality": 70
+  },
+  "security": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "nodeIntegration": false,
+    "nodeIntegrationInWorker": false,
+    "nodeIntegrationInSubFrames": true,
+    "webSecurity": true,
+    "allowRunningInsecureContent": false,
+    "webviewTag": false
+  },
+  "websiteRules": {
+    "defaultAgentPermission": "ask",
+    "defaultJavaScriptEnabled": true,
+    "defaultCookiesEnabled": true,
+    "defaultStorageEnabled": true
+  },
+  "viewport": {
+    "defaultWidth": 1280,
+    "defaultHeight": 720,
+    "defaultDeviceScaleFactor": 1,
+    "defaultIsMobile": false,
+    "presets": {
+      "desktop": { "width": 1280, "height": 720, "deviceScaleFactor": 1, "isMobile": false, "userAgent": null },
+      "desktop-hd": { "width": 1920, "height": 1080, "deviceScaleFactor": 1, "isMobile": false, "userAgent": null },
+      "desktop-4k": { "width": 3840, "height": 2160, "deviceScaleFactor": 2, "isMobile": false, "userAgent": null },
+      "tablet": { "width": 768, "height": 1024, "deviceScaleFactor": 2, "isMobile": true, "userAgent": "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+      "tablet-landscape": { "width": 1024, "height": 768, "deviceScaleFactor": 2, "isMobile": true, "userAgent": "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+      "mobile": { "width": 390, "height": 844, "deviceScaleFactor": 3, "isMobile": true, "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+      "mobile-se": { "width": 375, "height": 667, "deviceScaleFactor": 2, "isMobile": true, "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+      "mobile-lg": { "width": 430, "height": 932, "deviceScaleFactor": 3, "isMobile": true, "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15" },
+      "android-mobile": { "width": 412, "height": 915, "deviceScaleFactor": 2.625, "isMobile": true, "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36" },
+      "android-tablet": { "width": 800, "height": 1280, "deviceScaleFactor": 2, "isMobile": true, "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel Tablet) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36" }
+    }
+  },
+  "cdp": {
+    "enabledDomains": [
+      "Page", "Runtime", "Network", "DOM", "Input", "Target",
+      "Emulation", "Fetch", "CSS", "Console", "Log", "Security",
+      "Overlay", "Animation", "Accessibility", "Performance",
+      "Memory", "Profiler", "Schema"
+    ],
+    "initializeOnDomReady": true
+  },
+  "proxy": {
+    "pacCacheTtlMs": 1800000,
+    "pacTimeoutMs": 10000
+  },
+  "webmcp": {
+    "maxFramesPerTab": 64,
+    "maxToolsPerFrame": 32,
+    "maxToolsPerTab": 128,
+    "maxTitleLength": 256,
+    "maxDescriptionLength": 4096,
+    "discoveryTimeoutMs": 3000,
+    "executionTimeoutMs": 60000,
+    "maxActiveExecutionsPerTab": 4,
+    "trustLabel": "untrusted-site-content",
+    "toolRefreshIntervalMs": 250
+  },
+  "browserTask": {
+    "settleMs": 3000,
+    "quietMs": 250,
+    "observationCacheTtlMs": 30000,
+    "consentTimeoutMs": 30000,
+    "screenshotFormat": "png",
+    "accessibilityTreeDepth": 500
+  },
+  "session": {
+    "partitionPrefix": "openwork-browser",
+    "chromeUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  }
+}

@@ -28,7 +28,7 @@ const LOAD_URL = isDev ? "http://localhost:3000" : APP_URL;
 let mainWindow = null;
 let tray = null;
 let browserViewInstance = null;
-let currentBrowserUrl = "https://github.com";
+let currentBrowserUrl = null; // Will be loaded from settings, default to about:blank
 let localBridge = null;
 let browserTabManager = null;
 
@@ -444,7 +444,7 @@ function createWindow() {
       this.lastBounds = bounds;
       this.isAttached = true;
       if (this.tabs.length === 0) {
-        this.createTab(currentBrowserUrl || "https://github.com", true);
+        this.createTab(currentBrowserUrl || "about:blank", true);
       } else {
         this.attachActiveView();
       }
@@ -516,7 +516,7 @@ function createWindow() {
   function getOrCreateBrowserView() {
     let active = browserTabManager.getActiveTab();
     if (!active) {
-      active = browserTabManager.createTab(currentBrowserUrl || "https://github.com", true);
+      active = browserTabManager.createTab(currentBrowserUrl || "about:blank", true);
     }
     return active.view;
   }

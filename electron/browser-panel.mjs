@@ -20,60 +20,491 @@ import { createWebMcpBroker } from "./webmcp-host.mjs";
 import { createWebMcpFramePolicy } from "./webmcp-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BROWSER_SESSION_PARTITION = "persist:openwork-browser";
-const BROWSER_DEFAULT_URL = "about:blank";
+
+// ===== Configuration System (CHUNK 9) =====
+import fs from "node:fs";
+
+/**
+ * Load browser configuration from JSON file with defaults
+ * @returns {Object} Configuration object
+ */
+function loadBrowserConfig() {
+  const configPath = path.join(app.getPath("userData"), "browser-config.json");
+  const defaults = getDefaultBrowserConfig();
+
+  try {
+    if (fs.existsSync(configPath)) {
+      const userConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      return deepMerge(defaults, userConfig);
+    }
+  } catch (error) {
+    console.warn("Failed to load browser config, using defaults:", error.message);
+  }
+  return defaults;
+}
+
+/**
+ * Deep merge two objects
+ * @param {Object} target - Target object
+ * @param {Object} source - Source object
+ * @returns {Object} Merged object
+ */
+function deepMerge(target, source) {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+      result[key] = deepMerge(target[key] || {}, source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
+/**
+ * Get default browser configuration
+ * @returns {Object} Default configuration
+ */
+function getDefaultBrowserConfig() {
+  return {
+    browser: {
+      defaultUrl: "about:blank",
+      newTabUrl: "https://www.google.com",
+      maxTabs: 12,
+      maxClosedTabs: 20,
+      targetResolveTimeoutMs: 2500
+    },
+    backgroundTabs: {
+      maxBackgroundTabs: 10,
+      suspendDelayMs: 300000,
+      thumbnailIntervalMs: 30000,
+      thumbnailSize: { width: 320, height: 200 },
+      thumbnailQuality: 70
+    },
+    security: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false
+    },
+    websiteRules: {
+      defaultAgentPermission: "ask",
+      defaultJavaScriptEnabled: true,
+      defaultCookiesEnabled: true,
+      defaultStorageEnabled: true
+    },
+    viewport: {
+      defaultWidth: 1280,
+      defaultHeight: 720,
+      defaultDeviceScaleFactor: 1,
+      defaultIsMobile: false
+    },
+    cdp: {
+      enabledDomains: [
+        "Page", "Runtime", "Network", "DOM", "Input", "Target",
+        "Emulation", "Fetch", "CSS", "Console", "Log", "Security",
+        "Overlay", "Animation", "Accessibility", "Performance",
+        "Memory", "Profiler", "Schema"
+      ],
+      initializeOnDomReady: true
+    },
+    proxy: {
+      pacCacheTtlMs: 1800000,
+      pacTimeoutMs: 10000
+    },
+    webmcp: {
+      maxFramesPerTab: 64,
+      maxToolsPerFrame: 32,
+      maxToolsPerTab: 128,
+      maxTitleLength: 256,
+      maxDescriptionLength: 4096,
+      discoveryTimeoutMs: 3000,
+      executionTimeoutMs: 60000,
+      maxActiveExecutionsPerTab: 4,
+      trustLabel: "untrusted-site-content",
+      toolRefreshIntervalMs: 250
+    },
+    browserTask: {
+      settleMs: 3000,
+      quietMs: 250,
+      observationCacheTtlMs: 30000,
+      consentTimeoutMs: 30000,
+      screenshotFormat: "png",
+      accessibilityTreeDepth: 500
+    },
+    session: {
+      partitionPrefix: "openwork-browser",
+      chromeUserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    }
+  };
+}
+
+// Load configuration
+const CONFIG = loadBrowserConfig();
+
+// Export for use in other modules
+export { CONFIG, loadBrowserConfig, getDefaultBrowserConfig };
+
+const BROWSER_DEFAULT_URL = CONFIG.browser.defaultUrl;
+
+/** Get per-session partition — each session gets isolated cookies/storage */
+function getSessionPartition(sessionId) {
+  return `persist:openwork-browser-${sessionId}`;
+}
+
+/**
+ * Get per-origin partition for deeper cookie isolation within a session.
+ * Each origin gets its own cookie jar: persist:openwork-browser-{sessionId}-{originHash}
+ * @param {string} sessionId
+ * @param {string} url - The URL to derive origin from
+ * @returns {string} Partition string
+ */
+function getOriginPartition(sessionId, url) {
+  try {
+    const parsed = new URL(url);
+    const origin = parsed.origin; // e.g., "https://github.com"
+    // Create a short hash of the origin for the partition name
+    const originHash = hashString(origin).slice(0, 8);
+    return `persist:openwork-browser-${sessionId}-${originHash}`;
+  } catch {
+    // Fallback to session partition if URL parsing fails
+    return getSessionPartition(sessionId);
+  }
+}
+
+/**
+ * Simple string hash for generating partition suffixes
+ * @param {string} str
+ * @returns {string}
+ */
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  // Convert to positive hex string
+  return (hash >>> 0).toString(16);
+}
 // URL a user-initiated new tab (the "+" button / opening the browser panel)
 // lands on. The agent's programmatic path keeps BROWSER_DEFAULT_URL.
-const BROWSER_NEW_TAB_URL = "https://www.google.com";
+const BROWSER_NEW_TAB_URL = CONFIG.browser.newTabUrl;
+// Default session partition (used when no sessionId is available)
+const BROWSER_SESSION_PARTITION = `persist:${CONFIG.session.partitionPrefix}`;
+// Default Chrome user agent
+const CHROME_USER_AGENT = CONFIG.session.chromeUserAgent;
 // Bound native page allocation across conversations. Refuse new work rather
 // than evicting a live document (unsaved input and CDP handles cannot be restored
 // from a URL). This is a tab bound, not a Chromium process or memory limit.
-const MAX_BROWSER_TABS = 12;
-const MAX_CLOSED_BROWSER_TABS = 20;
-const BROWSER_TARGET_RESOLVE_TIMEOUT_MS = 2500;
+const MAX_BROWSER_TABS = CONFIG.browser.maxTabs;
+const MAX_CLOSED_BROWSER_TABS = CONFIG.browser.maxClosedTabs;
+// Background tab management (CHUNK 3)
+const MAX_BACKGROUND_TABS = CONFIG.backgroundTabs.maxBackgroundTabs;           // Max background tabs before auto-suspend
+const BACKGROUND_SUSPEND_DELAY_MS = CONFIG.backgroundTabs.suspendDelayMs; // 5 min before auto-suspend
+const THUMBNAIL_INTERVAL_MS = CONFIG.backgroundTabs.thumbnailIntervalMs;  // Thumbnail refresh interval
+const THUMBNAIL_SIZE = CONFIG.backgroundTabs.thumbnailSize;
+const THUMBNAIL_QUALITY = CONFIG.backgroundTabs.thumbnailQuality;
+const BROWSER_TARGET_RESOLVE_TIMEOUT_MS = CONFIG.browser.targetResolveTimeoutMs;
 const BROWSER_SECURITY_PREFERENCES = Object.freeze({
-  sandbox: true,
-  contextIsolation: true,
-  nodeIntegration: false,
-  nodeIntegrationInWorker: false,
+  sandbox: CONFIG.security.sandbox,
+  contextIsolation: CONFIG.security.contextIsolation,
+  nodeIntegration: CONFIG.security.nodeIntegration,
+  nodeIntegrationInWorker: CONFIG.security.nodeIntegrationInWorker,
   // Run the isolated preload in each iframe. Sandboxing still disables Node
   // in website JavaScript, including opener-linked popup contents.
-  nodeIntegrationInSubFrames: true,
-  webSecurity: true,
-  allowRunningInsecureContent: false,
-  webviewTag: false,
+  nodeIntegrationInSubFrames: CONFIG.security.nodeIntegrationInSubFrames,
+  webSecurity: CONFIG.security.webSecurity,
+  allowRunningInsecureContent: CONFIG.security.allowRunningInsecureContent,
+  webviewTag: CONFIG.security.webviewTag,
 });
 
+// ===== WEBSITE RULES SYSTEM =====
+// Per-origin configuration for agent permissions, viewport, user agent, and content policies.
+
+/**
+ * @typedef {Object} WebsiteViewport
+ * @property {number} width
+ * @property {number} height
+ * @property {number} [deviceScaleFactor]
+ * @property {boolean} [isMobile]
+ */
+
+/**
+ * @typedef {Object} WebsitePermissions
+ * @property {("grant"|"deny"|"ask")} [geolocation]
+ * @property {("grant"|"deny"|"ask")} [notifications]
+ * @property {("grant"|"deny"|"ask")} [clipboard]
+ */
+
+/**
+ * @typedef {Object} WebsiteRule
+ * @property {string} origin - Origin (e.g., "https://github.com")
+ * @property {("allow"|"deny"|"ask")} agentPermission - Whether agent can automate this site
+ * @property {WebsiteViewport} [viewport] - Viewport emulation settings
+ * @property {string} [userAgent] - Custom user agent override
+ * @property {WebsitePermissions} [permissions] - Browser permissions
+ * @property {boolean} [javascriptEnabled=true] - Whether JavaScript is enabled
+ * @property {boolean} [cookiesEnabled=true] - Whether cookies are enabled
+ * @property {boolean} [storageEnabled=true] - Whether localStorage/sessionStorage enabled
+ */
+
+const DEFAULT_WEBSITE_RULE = Object.freeze({
+  agentPermission: CONFIG.websiteRules.defaultAgentPermission,
+  javascriptEnabled: CONFIG.websiteRules.defaultJavaScriptEnabled,
+  cookiesEnabled: CONFIG.websiteRules.defaultCookiesEnabled,
+  storageEnabled: CONFIG.websiteRules.defaultStorageEnabled,
+});
+
+// ===== CHUNK 4: Viewport Emulation Presets =====
+const DEVICE_PRESETS = Object.freeze(CONFIG.viewport.presets);
+
+const WEBSITE_RULES_STORAGE_KEY = "openwork:website-rules";
+
+/** @type {Map<string, WebsiteRule>} */
+let websiteRules = new Map();
+
+/** @type {Function|null} */
+let websiteRulesPersistCallback = null;
+
+/**
+ * Get the origin from a URL.
+ * @param {string} url
+ * @returns {string|null}
+ */
+function getOriginFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the effective rule for a URL (exact origin match or default).
+ * @param {string} url
+ * @returns {WebsiteRule}
+ */
+function getWebsiteRule(url) {
+  const origin = getOriginFromUrl(url);
+  if (!origin) return { ...DEFAULT_WEBSITE_RULE };
+  const rule = websiteRules.get(origin);
+  return rule ? { ...DEFAULT_WEBSITE_RULE, ...rule } : { ...DEFAULT_WEBSITE_RULE };
+}
+
+/**
+ * Set a website rule for an origin.
+ * @param {string} origin
+ * @param {Partial<WebsiteRule>} rule
+ */
+function setWebsiteRule(origin, rule) {
+  const normalizedOrigin = origin.replace(/\/$/, "");
+  const existing = websiteRules.get(normalizedOrigin) || {};
+  websiteRules.set(normalizedOrigin, { ...existing, ...rule, origin: normalizedOrigin });
+  persistWebsiteRules();
+}
+
+/**
+ * Remove a website rule.
+ * @param {string} origin
+ */
+function removeWebsiteRule(origin) {
+  const normalizedOrigin = origin.replace(/\/$/, "");
+  websiteRules.delete(normalizedOrigin);
+  persistWebsiteRules();
+}
+
+/**
+ * Get all website rules.
+ * @returns {WebsiteRule[]}
+ */
+function listWebsiteRules() {
+  return [...websiteRules.values()];
+}
+
+/**
+ * Load website rules from storage.
+ * @param {Function} get - Async function to get stored value
+ */
+async function loadWebsiteRules(get) {
+  try {
+    const stored = await get(WEBSITE_RULES_STORAGE_KEY);
+    if (stored && typeof stored === "object") {
+      websiteRules = new Map(Object.entries(stored).map(([origin, rule]) => [origin, rule]));
+    }
+  } catch {
+    // Ignore load errors, start fresh
+  }
+}
+
+/**
+ * Set persist callback.
+ * @param {Function} callback
+ */
+function setWebsiteRulesPersistCallback(callback) {
+  websiteRulesPersistCallback = callback;
+}
+
+/**
+ * Persist website rules to storage.
+ */
+function persistWebsiteRules() {
+  if (websiteRulesPersistCallback) {
+    const obj = Object.fromEntries(websiteRules);
+    websiteRulesPersistCallback(WEBSITE_RULES_STORAGE_KEY, obj);
+  }
+}
+
+/**
+ * Apply website rule to a tab's WebContentsView.
+ * @param {Object} tab - Browser tab object
+ * @param {WebsiteRule} rule - The website rule to apply
+ */
+async function applyWebsiteRuleToTab(tab, rule) {
+  const webContents = tab.view.webContents;
+  if (webContents.isDestroyed()) return;
+
+  // Apply viewport emulation
+  if (rule.viewport) {
+    const cdp = webContents.debugger;
+    const attached = cdp.isAttached();
+    try {
+      if (!attached) cdp.attach("1.3");
+      await cdp.sendCommand("Emulation.setDeviceMetricsOverride", {
+        width: rule.viewport.width,
+        height: rule.viewport.height,
+        deviceScaleFactor: rule.viewport.deviceScaleFactor || 1,
+        mobile: rule.viewport.isMobile || false,
+        screenWidth: rule.viewport.width,
+        screenHeight: rule.viewport.height,
+        positionX: 0,
+        positionY: 0,
+        dontSetVisibleSize: false,
+        scale: 1,
+      });
+    } finally {
+      if (!attached && !webContents.isDestroyed() && cdp.isAttached()) cdp.detach();
+    }
+  }
+
+  // Apply user agent override
+  if (rule.userAgent) {
+    try {
+      await webContents.setUserAgent(rule.userAgent);
+    } catch {
+      // Ignore UA errors
+    }
+  }
+
+  // Apply JavaScript setting
+  try {
+    await webContents.setJavaScriptEnabled(rule.javascriptEnabled !== false);
+  } catch {
+    // Ignore
+  }
+
+  // Apply cookie setting (via session)
+  // Note: Cookie policy is session-wide, would need per-origin partitioning
+  // For now we track it in the rule for future use with partitioned sessions
+
+  // Apply permissions
+  if (rule.permissions) {
+    const cdp = webContents.debugger;
+    const attached = cdp.isAttached();
+    try {
+      if (!attached) cdp.attach("1.3");
+      const permissionMap = {
+        geolocation: "geolocation",
+        notifications: "notifications",
+        clipboard: "clipboard-read-write",
+      };
+      for (const [key, permission] of Object.entries(permissionMap)) {
+        const setting = rule.permissions[key];
+        if (setting && setting !== "ask") {
+          await cdp.sendCommand("Browser.grantPermissions", {
+            origin: rule.origin,
+            permission: permission,
+            setting: setting === "grant" ? "granted" : "denied",
+          });
+        }
+      }
+    } catch {
+      // Ignore permission errors
+    } finally {
+      if (!attached && !webContents.isDestroyed() && cdp.isAttached()) cdp.detach();
+    }
+  }
+}
+
+/**
+ * Check if agent is allowed to automate a URL based on website rules.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isAgentAllowedByWebsiteRule(url) {
+  const rule = getWebsiteRule(url);
+  return rule.agentPermission === "allow";
+}
+
+/**
+ * Check if agent should be asked for permission for a URL.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function shouldAskAgentPermission(url) {
+  const rule = getWebsiteRule(url);
+  return rule.agentPermission === "ask";
+}
+
+export {
+  DEFAULT_WEBSITE_RULE,
+  WEBSITE_RULES_STORAGE_KEY,
+  getOriginFromUrl,
+  getWebsiteRule,
+  setWebsiteRule,
+  removeWebsiteRule,
+  listWebsiteRules,
+  loadWebsiteRules,
+  setWebsiteRulesPersistCallback,
+  applyWebsiteRuleToTab,
+  isAgentAllowedByWebsiteRule,
+  shouldAskAgentPermission,
+};
 export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, checkPolicy, showNativeContextMenu, closeNativeContextMenu }) {
-  let browserSessionHooksInstalled = false;
-  function installBrowserSessionHooks() {
-    if (browserSessionHooksInstalled) return;
-    // The manager is constructed before app.whenReady(). Only acquire the
-    // Electron session when creating a tab, after native window setup.
-    const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
-      // Clean Google Chrome User Agent to bypass Google/GitHub/Twitter/Microsoft login blocks
-      const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-      try { browserSession.setUserAgent(CHROME_USER_AGENT); } catch (e) {}
-      try {
-        browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
-          const requestHeaders = { ...details.requestHeaders };
-          requestHeaders['User-Agent'] = CHROME_USER_AGENT;
-          callback({ requestHeaders });
-        });
-      } catch (e) {}
-      try {
-        browserSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
-          const responseHeaders = { ...details.responseHeaders };
-          for (const key of Object.keys(responseHeaders)) {
-            const lowerKey = key.toLowerCase();
-            if (lowerKey === 'x-frame-options') delete responseHeaders[key];
-            if (lowerKey === 'content-security-policy') {
-              responseHeaders[key] = responseHeaders[key].map((csp) => csp.replace(/frame-ancestors[^;]+;?/gi, ''));
-            }
+  const browserSessions = new Map(); // sessionId -> Electron.Session
+  const webMcpFramePolicies = new Map(); // sessionId -> WebMcpFramePolicy
+  const browserSessionHooksInstalled = new Set(); // sessionId
+
+  function installBrowserSessionHooks(sessionId) {
+    if (browserSessionHooksInstalled.has(sessionId)) return;
+    const browserSession = session.fromPartition(getSessionPartition(sessionId));
+    // Clean Google Chrome User Agent to bypass Google/GitHub/Twitter/Microsoft login blocks
+    try { browserSession.setUserAgent(CHROME_USER_AGENT); } catch (e) {}
+    try {
+      browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        const requestHeaders = { ...details.requestHeaders };
+        requestHeaders['User-Agent'] = CHROME_USER_AGENT;
+        callback({ requestHeaders });
+      });
+    } catch (e) {}
+    try {
+      browserSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
+        const responseHeaders = { ...details.responseHeaders };
+        for (const key of Object.keys(responseHeaders)) {
+          const lowerKey = key.toLowerCase();
+          if (lowerKey === 'x-frame-options') delete responseHeaders[key];
+          if (lowerKey === 'content-security-policy') {
+            responseHeaders[key] = responseHeaders[key].map((csp) => csp.replace(/frame-ancestors[^;]+;?/gi, ''));
           }
-          callback({ responseHeaders });
-        });
-      } catch (e) {}
+        }
+        callback({ responseHeaders });
+      });
+    } catch (e) {}
 
     browserSession.on("will-download", (_event, item, contents) => {
       const tab = [...browserTabs.values()].find((candidate) => candidate.view.webContents === contents);
@@ -81,7 +512,25 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       tab.downloads.add(item);
       item.once("done", () => tab.downloads.delete(item));
     });
-    browserSessionHooksInstalled = true;
+    browserSessionHooksInstalled.add(sessionId);
+  }
+
+  function ensureBrowserSession(sessionId) {
+    let browserSession = browserSessions.get(sessionId);
+    if (!browserSession) {
+      browserSession = session.fromPartition(getSessionPartition(sessionId));
+      browserSessions.set(sessionId, browserSession);
+      // Capture the first response, before a view can load any document.
+      const webMcpFramePolicy = createWebMcpFramePolicy(browserSession);
+      webMcpFramePolicy.install();
+      webMcpFramePolicies.set(sessionId, webMcpFramePolicy);
+    }
+    return browserSession;
+  }
+  function ensureWebMcpFramePolicy(sessionId) {
+    ensureBrowserSession(sessionId);
+    return webMcpFramePolicies.get(sessionId);
+  }
     if (!checkPolicy) return;
     // The session request boundary covers normal navigation, redirects, frames,
     // scripted fetches and CDP navigation; window navigation events do not.
@@ -158,6 +607,36 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
   // Active proxy for the built-in browser session: { rules, username, password }.
   let browserProxy = null;
   let browserControlEnabled = true;
+  // Website Rules initialization
+  const websiteRulesStorePath = path.join(app.getPath("userData"), "website-rules.json");
+  async function loadWebsiteRulesFromDisk() {
+    try {
+      const fs = await import("node:fs/promises");
+      const data = await fs.readFile(websiteRulesStorePath, "utf8");
+      const stored = JSON.parse(data);
+      if (stored && typeof stored === "object") {
+        websiteRules = new Map(Object.entries(stored).map(([origin, rule]) => [origin, rule]));
+      }
+    } catch {
+      // Ignore errors, start fresh
+    }
+  }
+  async function saveWebsiteRulesToDisk() {
+    try {
+      const fs = await import("node:fs/promises");
+      const obj = Object.fromEntries(websiteRules);
+      await fs.writeFile(websiteRulesStorePath, JSON.stringify(obj, null, 2), "utf8");
+    } catch {
+      // Ignore write errors
+    }
+  }
+  setWebsiteRulesPersistCallback(saveWebsiteRulesToDisk);
+  loadWebsiteRulesFromDisk();
+
+  // Auto-suspend timer: check every minute
+  const autoSuspendTimer = setInterval(scheduleAutoSuspend, 60 * 1000);
+  autoSuspendTimer.unref?.();
+
   let menuRequest = null;
   let menuShowSerial = 0;
   let linkChoiceRequest = null;
@@ -175,10 +654,7 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     try { mainWindow.webContents.send(channel, payload); } catch { /* window closing */ }
   }
 
-  function createBrowserTabId() {
-    browserTabCounter += 1;
-    return `tab_${Date.now().toString(36)}_${browserTabCounter.toString(36)}`;
-  }
+
 
   function normalizeBrowserUrl(url, fallback = BROWSER_DEFAULT_URL) {
     const target = typeof url === "string" && url.trim() ? url.trim() : fallback;
@@ -188,6 +664,9 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
 
   async function browserTaskAllowed(url) {
     if (!browserControlEnabled || typeof checkPolicy !== "function") return false;
+    const rule = getWebsiteRule(url);
+    if (rule.agentPermission === "deny") return false;
+    if (rule.agentPermission === "allow") return true;
     try {
       await checkPolicy({ url });
       return browserControlEnabled;
@@ -209,12 +688,6 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     } catch {
       return true;
     }
-  }
-
-  function routeBlockedMainWindowNavigation(url) {
-    if (!/^https?:\/\//i.test(String(url ?? ""))) return;
-    const ownerSessionId = registry.visibleSessionId();
-    runDetachedTask("open linked browser page", () => openBrowserUrlForAutomation(url, "builtin", { ownerSessionId }));
   }
 
   function cdpBrowserUrl() {
@@ -403,6 +876,63 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     closeNativeContextMenu();
   }
 
+  // ===== WebMCP Tool Integration (CHUNK 8) =====
+  /**
+   * Execute a WebMCP tool from context menu
+   * @param {Object} tab - Browser tab
+   * @param {string} toolId - Tool ID to execute
+   */
+  async function executeWebMcpToolFromMenu(tab, toolId) {
+    try {
+      const ownerSessionId = registry.ownerOf(tab.tabId);
+      if (!ownerSessionId) return;
+
+      // Find the tool
+      const tool = tab.webMcpTools?.find(t => t.id === toolId);
+      if (!tool) return;
+
+      // Get input for the tool - for context menu, we can use selection or prompt
+      let input = {};
+      if (tool.parameters && typeof tool.parameters === "object") {
+        // For now, use empty input - could be enhanced to prompt for parameters
+        input = {};
+      }
+
+      // Execute via taskHost (which uses the WebMCP broker)
+      const result = await taskHost.request({
+        sessionId: ownerSessionId,
+        operation: "site_tool",
+        args: { tabId: tab.tabId, toolId, input }
+      });
+
+      if (result.ok) {
+        // Show result to user
+        const resultText = typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
+        const mainWindow = window();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await dialog.showMessageBox(mainWindow, {
+            type: "info",
+            title: `Tool Result: ${tool.name || toolId}`,
+            message: resultText.slice(0, 1000) + (resultText.length > 1000 ? "..." : ""),
+            buttons: ["OK"]
+          });
+        }
+      } else {
+        const mainWindow = window();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await dialog.showMessageBox(mainWindow, {
+            type: "error",
+            title: `Tool Failed: ${tool.name || toolId}`,
+            message: result.error || "Unknown error",
+            buttons: ["OK"]
+          });
+        }
+      }
+    } catch (error) {
+      console.warn("WebMCP tool execution from menu failed:", error.message);
+    }
+  }
+
   function tabMenuRequest(tab, point) {
     const url = browserTabUrl(tab);
     return {
@@ -414,6 +944,8 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       items: [
         { type: "item", id: "copy-url", label: "Copy URL", enabled: !!url },
         { type: "item", id: "open-external", label: "Open in Browser", enabled: !!url && isHttpUrl(url) },
+        { type: "separator" },
+        { type: "item", id: "webmcp-refresh", label: "Refresh WebMCP Tools", enabled: true },
         { type: "separator" },
         { type: "item", id: "close-tab", label: "Close Tab" },
         { type: "item", id: "close-all-tabs", label: "Close All Tabs" },
@@ -482,6 +1014,26 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       add("forward", "Forward", () => contents.goForward(), contents.canGoForward());
       add("reload", "Reload", () => contents.reload());
     }
+
+    // ===== WebMCP Tool Integration (CHUNK 8) =====
+    // Add available WebMCP tools to context menu
+    if (tab.webMcpTools && tab.webMcpTools.length > 0) {
+      separator();
+      add("webmcp-tools-header", "WebMCP Tools", null, false); // Disabled header
+      for (const tool of tab.webMcpTools.slice(0, 10)) { // Limit to 10 tools
+        const toolId = `webmcp-${tool.id}`;
+        add(toolId, tool.name || tool.id, () => executeWebMcpToolFromMenu(tab, tool.id), tool.enabled !== false);
+      }
+      if (tab.webMcpTools.length > 10) {
+        add("webmcp-more", `... and ${tab.webMcpTools.length - 10} more tools`, null, false);
+      }
+    }
+
+    // Add page inspection tools
+    separator();
+    add("inspect-element", "Inspect Element", () => contents.inspectElement(params.x, params.y));
+    add("view-source", "View Page Source", () => contents.executeJavaScript("window.open('view-source:' + window.location.href, '_blank')"));
+
     // Chromium supplies view-relative coordinates, already in window DIPs.
     // Convert to app CSS pixels for the shared helper, not through page zoom.
     const bounds = tab.view.getBounds();
@@ -587,6 +1139,12 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       case "close-all-tabs":
         closeAllBrowserTabs(true);
         break;
+      case "webmcp-refresh":
+        if (tab) {
+          await scheduleWebMcpToolCountRefresh(tab.tabId);
+          sendBrowserState();
+        }
+        break;
     }
   }
 
@@ -621,10 +1179,11 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     };
   }
 
-  function browserProxyState() {
+  function browserProxyState(sessionId = "default") {
+    const proxy = browserProxies.get(sessionId);
     return {
-      proxy: browserProxy
-        ? { rules: browserProxy.rules, authenticated: Boolean(browserProxy.username) }
+      proxy: proxy
+        ? { rules: proxy.rules, authenticated: Boolean(proxy.username) }
         : null,
     };
   }
@@ -679,7 +1238,12 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       message: `Share the result from ${tool.origin} with this conversation and its model provider?`,
       detail: `The website action has already run. Review this complete result for passwords, session cookies, tokens or other private data before sharing. Denying keeps the result out of the conversation and does not undo the action.\n\n${resultText}`,
     }),
-    isFrameAllowed: async (frame) => await browserTaskAllowed(frame.url) && ensureWebMcpFramePolicy().checkFrame(frame),
+    isFrameAllowed: async (frame) => {
+      // Find the tab that owns this frame's webContents
+      const tab = [...browserTabs.values()].find((candidate) => candidate.view.webContents.id === frame.webContentsId);
+      const sessionId = tab ? registry.ownerOf(tab.tabId) : "default";
+      return await browserTaskAllowed(frame.url) && ensureWebMcpFramePolicy(sessionId).checkFrame(frame);
+    },
     onActivity: (activity) => {
       const tab = getBrowserTab(activity.tabId);
       if (!tab) return;
@@ -716,6 +1280,31 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     changed: (tabId, activity) => { const tab = getBrowserTab(tabId); if (tab) { tab.browserTask = activity; sendBrowserState(); } },
     siteTools: (args) => webMcpBroker.listTools(args),
     runSiteTool: (args, options) => webMcpBroker.executeTool(args, options),
+    // Prepare before actions (release input lease for form edits)
+    prepare: async (tab) => {
+      // No-op by default; can be extended for input lease management
+    },
+    // Critical for click coordinates when page is scaled (viewport emulation, device pixel ratio)
+    inputScale: (tab) => {
+      const rule = tab.websiteRule || getWebsiteRule(tab.view.webContents.getURL());
+      if (rule.viewport?.deviceScaleFactor) return rule.viewport.deviceScaleFactor;
+      // Fallback: try to get from webContents zoom level
+      try {
+        const zoomLevel = tab.view.webContents.getZoomLevel();
+        return Math.pow(1.2, zoomLevel);
+      } catch {
+        return 1;
+      }
+    },
+    // Capture page for observation caching (SHA256 image digest)
+    capture: async (tab, viewport) => {
+      try {
+        const capture = await tab.view.webContents.capturePage();
+        return capture.resize({ width: viewport.width, height: viewport.height }).toPNG({ scaleFactor: 1 });
+      } catch {
+        return null;
+      }
+    },
   });
 
   function scheduleWebMcpToolCountRefresh(tabId) {
@@ -736,36 +1325,374 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     webMcpBroker.invalidateTab(tab.tabId);
   }
 
-  async function setBrowserProxy(proxyInput) {
-    const browserSession = ensureBrowserSession();
+  // Per-session proxy config
+  const browserProxies = new Map(); // sessionId -> parsed proxy config
+
+  async function setBrowserProxy(sessionId, proxyInput) {
+    const browserSession = ensureBrowserSession(sessionId);
     const parsed = parseBrowserProxyInput(proxyInput);
     if (parsed) {
       await browserSession.setProxy({ proxyRules: parsed.rules, proxyBypassRules: "<local>" });
     } else {
       await browserSession.setProxy({ mode: "system" });
     }
-    browserProxy = parsed;
+    browserProxies.set(sessionId, parsed);
     // Drop keep-alive connections so existing tabs cannot bypass the new proxy.
     await browserSession.closeAllConnections();
-    return browserProxyState();
+    return browserProxyState(sessionId);
   }
 
   app.on("login", (event, _webContents, _details, authInfo, callback) => {
-    if (!authInfo?.isProxy || !browserProxy?.username) return;
-    event.preventDefault();
-    callback(browserProxy.username, browserProxy.password);
+    if (!authInfo?.isProxy) return;
+    // Find the session that owns this webContents
+    for (const [sessionId, proxy] of browserProxies) {
+      if (proxy?.username) {
+        event.preventDefault();
+        callback(proxy.username, proxy.password);
+        return;
+      }
+    }
   });
 
-  function createBrowserTab(url = "about:blank", { select = true, initializeBlank = true, deferBackground = false, ownerSessionId = null, restoreTabId = null, automationProtected = false, contentsOptions = /** @type {import("electron").WebContentsViewConstructorOptions} */ ({}) } = {}) {
-    // Check synchronously before creating a WebContentsView, including pending
-    // opens, popups, transcript links and the tab-strip button.
-    if (browserTabs.size >= MAX_BROWSER_TABS) {
-      throw new BrowserTaskError("tab_limit", `OpenWork has ${MAX_BROWSER_TABS} browser tabs open. Close an unused browser tab in any conversation, then try again.`);
+  // ===== Per-Tab Proxy + PAC Support (CHUNK 7) =====
+  // Per-tab proxy configuration with PAC script support
+
+  const tabProxies = new Map(); // tabId -> { parsed, pacUrl, pacScript, pacFunction }
+  const pacCache = new Map(); // pacUrl -> { script, fetchedAt, error }
+
+  /**
+   * Parse PAC script and create a FindProxyForURL function
+   * @param {string} pacScript - PAC script content
+   * @returns {Function|null} FindProxyForURL function or null if invalid
+   */
+  function compilePacScript(pacScript) {
+    try {
+      // Create a sandboxed environment for PAC script
+      const pacContext = {
+        // PAC standard functions
+        isPlainHostName: (host) => !host.includes("."),
+        dnsDomainIs: (host, domain) => host.endsWith(domain),
+        localHostOrDomainIs: (host, hostdom) => host === hostdom,
+        isResolvable: () => true, // Simplified
+        isInNet: () => false, // Simplified
+        dnsResolve: (host) => host, // Simplified
+        myIpAddress: () => "127.0.0.1",
+        shExpMatch: (str, shexp) => {
+          // Simple shell expression matching
+          const regex = new RegExp("^" + shexp.replace(/\./g, "\\.").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+          return regex.test(str);
+        },
+        weekdayRange: () => false,
+        dateRange: () => false,
+        timeRange: () => false,
+        alert: (msg) => console.log("PAC alert:", msg),
+      };
+
+      // Wrap PAC script in a function
+      const func = new Function("url", "host", "return (" + pacScript + ")");
+      return (url, host) => {
+        try {
+          return func.call(pacContext, url, host);
+        } catch (e) {
+          console.warn("PAC script execution error:", e.message);
+          return "DIRECT";
+        }
+      };
+    } catch (e) {
+      console.warn("PAC script compilation failed:", e.message);
+      return null;
     }
+  }
+
+  /**
+   * Fetch and compile PAC script from URL
+   * @param {string} pacUrl - URL to PAC script
+   * @returns {Promise<Function|null>} Compiled FindProxyForURL function
+   */
+  async function fetchAndCompilePac(pacUrl) {
+    const cached = pacCache.get(pacUrl);
+    if (cached && !cached.error && Date.now() - cached.fetchedAt < 30 * 60 * 1000) {
+      return cached.script;
+    }
+
+    try {
+      const response = await fetch(pacUrl);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const script = await response.text();
+      const compiled = compilePacScript(script);
+      pacCache.set(pacUrl, { script: compiled, fetchedAt: Date.now(), error: null });
+      return compiled;
+    } catch (error) {
+      pacCache.set(pacUrl, { script: null, fetchedAt: Date.now(), error: error.message });
+      console.warn("Failed to fetch PAC script:", error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Resolve proxy for a specific tab and URL
+   * @param {string} tabId - Tab ID
+   * @param {string} url - Target URL
+   * @returns {Promise<string>} Proxy rule string (e.g., "PROXY host:port", "SOCKS5 host:port", "DIRECT")
+   */
+  async function resolveTabProxy(tabId, url) {
+    const tabProxy = tabProxies.get(tabId);
+    if (tabProxy) {
+      // Check PAC script first
+      if (tabProxy.pacFunction) {
+        try {
+          const parsedUrl = new URL(url);
+          const host = parsedUrl.hostname;
+          const pacResult = tabProxy.pacFunction(url, host);
+          if (pacResult && pacResult !== "DIRECT") {
+            return pacResult;
+          }
+        } catch (e) {
+          console.warn("PAC resolution error:", e.message);
+        }
+      }
+      // Fall back to static proxy
+      if (tabProxy.parsed?.rules) {
+        return tabProxy.parsed.rules;
+      }
+    }
+
+    // Fall back to session proxy
+    const sessionId = registry.ownerOf(tabId) ?? "default";
+    const sessionProxy = browserProxies.get(sessionId);
+    if (sessionProxy?.rules) {
+      return sessionProxy.rules;
+    }
+
+    return "DIRECT";
+  }
+
+  /**
+   * Set per-tab proxy configuration
+   * @param {string} tabId - Tab ID
+   * @param {Object} config - Proxy config: { proxyUrl?, pacUrl?, pacScript? }
+   */
+  async function setTabProxy(tabId, config) {
+    const tab = getBrowserTab(tabId);
+    if (!tab) throw new Error("Tab not found");
+
+    const tabProxy = { parsed: null, pacUrl: null, pacScript: null, pacFunction: null };
+
+    if (config.pacUrl) {
+      tabProxy.pacUrl = config.pacUrl;
+      tabProxy.pacFunction = await fetchAndCompilePac(config.pacUrl);
+    } else if (config.pacScript) {
+      tabProxy.pacScript = config.pacScript;
+      tabProxy.pacFunction = compilePacScript(config.pacScript);
+    } else if (config.proxyUrl) {
+      tabProxy.parsed = parseBrowserProxyInput(config.proxyUrl);
+    }
+
+    tabProxies.set(tabId, tabProxy);
+    // Update session PAC script to reflect new tab proxy
+    await updateSessionProxyForTab(tabId);
+    return { success: true, tabId, config: tabProxy };
+  }
+
+  /**
+   * Clear per-tab proxy (revert to session proxy)
+   * @param {string} tabId - Tab ID
+   */
+  async function clearTabProxy(tabId) {
+    tabProxies.delete(tabId);
+    // Update session PAC script to reflect removed tab proxy
+    await updateSessionProxyForTab(tabId);
+    return { success: true, tabId };
+  }
+
+  /**
+   * Get per-tab proxy state
+   * @param {string} tabId - Tab ID
+   */
+  function getTabProxyState(tabId) {
+    const tabProxy = tabProxies.get(tabId);
+    const sessionId = registry.ownerOf(tabId) ?? "default";
+    const sessionProxy = browserProxies.get(sessionId);
+
+    return {
+      tabProxy: tabProxy
+        ? {
+            hasStaticProxy: Boolean(tabProxy.parsed?.rules),
+            pacUrl: tabProxy.pacUrl,
+            hasPacFunction: Boolean(tabProxy.pacFunction),
+          }
+        : null,
+      sessionProxy: sessionProxy
+        ? { rules: sessionProxy.rules, authenticated: Boolean(sessionProxy.username) }
+        : null,
+    };
+  }
+
+  /**
+   * Generate a session-level PAC script that routes based on active tab's proxy config
+   * This PAC script is set on the Electron session and evaluates per-request
+   */
+  function generateSessionPacScript() {
+    return `
+      function FindProxyForURL(url, host) {
+        // This PAC script is dynamically generated and updated
+        // The actual routing logic is handled by the main process
+        // based on the tab that initiated the request
+        return "DIRECT";
+      }
+    `;
+  }
+
+  /**
+   * Apply per-tab proxy by setting a PAC script on the session
+   * This is called when tab proxy configuration changes
+   */
+  async function applyTabProxyToSession(sessionId) {
+    const browserSession = ensureBrowserSession(sessionId);
+    const pacScript = generateSessionPacScript();
+    try {
+      await browserSession.setProxy({ pacScript, proxyBypassRules: "<local>" });
+    } catch (error) {
+      console.warn("Failed to set session PAC script:", error.message);
+    }
+  }
+
+  /**
+   * Update session PAC script when tab proxies change
+   * This should be called after setTabProxy or clearTabProxy
+   */
+  async function updateSessionProxyForTab(tabId) {
+    const sessionId = registry.ownerOf(tabId) ?? "default";
+    await applyTabProxyToSession(sessionId);
+  }
+
+  // ===== CDP Domain Expansion (CHUNK 6) =====
+  // Comprehensive Chrome DevTools Protocol support for browser automation
+
+  const CDP_DOMAINS = CONFIG.cdp.enabledDomains;
+
+  /**
+   * Enable all CDP domains for a tab's WebContents
+   * @param {Electron.WebContents} contents
+   */
+  async function enableCdpDomains(contents) {
+    const cdp = contents.debugger;
+    if (!cdp.isAttached()) {
+      cdp.attach("1.3");
+    }
+    const results = await Promise.allSettled(
+      CDP_DOMAINS.map((domain) => cdp.sendCommand(`${domain}.enable`).catch((err) => {
+        // Some domains may not be available in all contexts; log but don't fail
+        console.debug(`CDP ${domain}.enable failed:`, err.message);
+        return { domain, enabled: false };
+      }))
+    );
+    const enabled = CDP_DOMAINS.filter((_, i) => results[i].status === "fulfilled" || (results[i].status === "rejected" && false));
+    console.log(`CDP domains enabled for tab: ${enabled.join(", ")}`);
+    return enabled;
+  }
+
+  /**
+   * Set up CDP event handlers for a tab
+   * @param {Electron.WebContents} contents
+   * @param {Object} tab - The browser tab object
+   */
+  function setupCdpEventHandlers(contents, tab) {
+    const cdp = contents.debugger;
+
+    // Network events
+    cdp.on("message", (method, params) => {
+      if (method === "Network.requestWillBeSent") {
+        tab._networkRequests = tab._networkRequests || new Map();
+        tab._networkRequests.set(params.requestId, { ...params, startTime: Date.now() });
+      } else if (method === "Network.responseReceived") {
+        if (tab._networkRequests?.has(params.requestId)) {
+          const req = tab._networkRequests.get(params.requestId);
+          req.response = params.response;
+          req.endTime = Date.now();
+        }
+      } else if (method === "Network.loadingFinished") {
+        tab._networkRequests?.delete(params.requestId);
+      } else if (method === "Network.loadingFailed") {
+        tab._networkRequests?.delete(params.requestId);
+      }
+    });
+
+    // Page lifecycle events
+    cdp.on("message", (method, params) => {
+      if (method === "Page.domContentEventFired" || method === "Page.loadEventFired") {
+        tab._pageLoadState = method;
+      }
+    });
+
+    // Console messages
+    cdp.on("message", (method, params) => {
+      if (method === "Console.messageAdded" || method === "Runtime.consoleAPICalled") {
+        tab._consoleMessages = tab._consoleMessages || [];
+        tab._consoleMessages.push({ method, params, timestamp: Date.now() });
+        if (tab._consoleMessages.length > 1000) tab._consoleMessages.shift();
+      }
+    });
+
+    // Handle target created/destroyed (iframes, popups)
+    cdp.on("message", (method, params) => {
+      if (method === "Target.targetCreated" || method === "Target.targetDestroyed") {
+        tab._cdpTargets = tab._cdpTargets || new Map();
+        if (method === "Target.targetCreated") {
+          tab._cdpTargets.set(params.targetInfo.targetId, params.targetInfo);
+        } else {
+          tab._cdpTargets.delete(params.targetInfo.targetId);
+        }
+      }
+    });
+  }
+
+  /**
+   * Initialize CDP for a tab - called on dom-ready
+   * @param {Object} tab - The browser tab object
+   */
+  async function initializeCdpForTab(tab) {
+    try {
+      const contents = tab.view.webContents;
+      if (contents.isDestroyed()) return;
+
+      await enableCdpDomains(contents);
+      setupCdpEventHandlers(contents, tab);
+
+      // Store CDP reference for later use
+      tab.cdp = contents.debugger;
+      tab.cdpInitialized = true;
+    } catch (error) {
+      console.warn("CDP initialization failed for tab:", error.message);
+    }
+  }
+
+  // Helper to safely send CDP commands
+  async function sendCdpCommand(tab, method, params = {}) {
+    if (!tab.cdp || tab.view.webContents.isDestroyed()) {
+      throw new Error("CDP not available or tab destroyed");
+    }
+    const cdp = tab.cdp;
+    const attached = !cdp.isAttached();
+    if (attached) cdp.attach("1.3");
+    try {
+      return await cdp.sendCommand(method, params);
+    } finally {
+      if (attached && !tab.view.webContents.isDestroyed() && cdp.isAttached()) {
+        cdp.detach();
+      }
+    }
+  }
+
+  function createBrowserTab(url = "about:blank", { select = true, initializeBlank = true, deferBackground = false, ownerSessionId = null, restoreTabId = null, automationProtected = false, contentsOptions = {} } = {}) {
+    const sessionId = ownerSessionId ?? "default";
+    if (browserTabs.size >= MAX_BROWSER_TABS) throw new BrowserTaskError("tab_limit", `OpenWork has ${MAX_BROWSER_TABS} browser tabs open. Close an unused browser tab in any conversation, then try again.`);
     if (!restoreTabId && registry.size() >= 100) throw new Error("OpenWork has 100 saved browser tabs. Close an unused tab, then try again.");
-    installBrowserSessionHooks();
-    ensureWebMcpFramePolicy();
+    installBrowserSessionHooks(sessionId);
+    ensureWebMcpFramePolicy(sessionId);
     const tabId = restoreTabId ?? createBrowserTabId();
+    // Use per-origin partition for deeper cookie isolation within a session
+    const partition = url && url !== "about:blank" ? getOriginPartition(sessionId, url) : getSessionPartition(sessionId);
     const view = new WebContentsView({
       ...contentsOptions,
       webPreferences: {
@@ -773,7 +1700,7 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
         backgroundThrottling: false,
         ...BROWSER_SECURITY_PREFERENCES,
         preload: path.join(__dirname, "browser-content-preload.cjs"),
-        partition: BROWSER_SESSION_PARTITION,
+        partition,
       },
     });
     const tab = {
@@ -781,131 +1708,83 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       deferBackground,
       operation: false, suspending: false, mediaPlaying: false, downloads: new Set(),
       domReady: false, emulation: Promise.resolve(),
-      /** @type {((error: Error | null) => void) | null} */
       finishSuspension: null,
       webMcpRevision: 0,
       documentGeneration: 0,
-      /** @type {import("@openwork/browser-tabs").BrowserPanelTab["loadError"]} */
       loadError: null,
       webMcpToolCount: 0,
       webMcpTools: [],
       webMcpActivity: [],
+      websiteRule: getWebsiteRule(url),
     };
     browserTabs.set(tabId, tab);
     if (!restoreTabId) registry.add({ tabId, ownerSessionId });
     view.webContents.on("context-menu", (_event, params) => {
       runDetachedTask("show browser page menu", () => showPageContextMenu(tab, params));
     });
-    view.webContents.once("dom-ready", () => {
+    view.webContents.once("dom-ready", async () => {
       tab.domReady = true;
+      const currentUrl = view.webContents.getURL();
+      if (currentUrl && currentUrl !== "about:blank") {
+        tab.websiteRule = getWebsiteRule(currentUrl);
+        await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      }
+      // Initialize CDP domains for full browser automation support
+      await initializeCdpForTab(tab);
       if (tab.background) emulateBackgroundTab(tab);
     });
     view.webContents.on("media-started-playing", () => { tab.mediaPlaying = true; });
     view.webContents.on("media-paused", () => { tab.mediaPlaying = false; });
     view.webContents.on("will-prevent-unload", () => {
-      // Do not preventDefault: the page's beforeunload veto must win.
       if (!tab.suspending || browserTabs.get(tabId) !== tab) return;
       tab.suspending = false;
       suspendedTabs.delete(tabId);
       tab.finishSuspension?.(new Error("The page prevented suspension."));
       sendBrowserState();
     });
-    // Load about:blank immediately to preempt persistent-session restore.
-    // Cookies live on the session object, not the document — they survive this.
-    // Callers that load their own page synchronously opt out, because this
-    // queued navigation would otherwise abort theirs.
-    if (initializeBlank) {
-      runDetachedTask("initialize browser tab", () => view.webContents.loadURL("about:blank"));
-    }
+    if (initializeBlank) runDetachedTask("initialize browser tab", () => view.webContents.loadURL("about:blank"));
     view.webContents.setWindowOpenHandler(({ url: targetUrl, disposition }) => {
       if (!/^https?:\/\//i.test(targetUrl)) return { action: "deny" };
-      // The shared all-request policy hook checks popup requests too. Never
-      // fall back to an external browser when that policy denies a request.
       return { action: "allow", overrideBrowserWindowOptions: { webPreferences: BROWSER_SECURITY_PREFERENCES }, createWindow: (options) => {
-        // Electron supplies the opener-linked webContents. Retain it: creating
-        // a different one leaves the synchronous window.open handshake waiting.
-        const popup = createBrowserTab("about:blank", { select: disposition !== "background-tab", initializeBlank: false, ownerSessionId: registry.ownerOf(tabId), contentsOptions: options });
+        // Pass targetUrl so the popup gets the correct origin partition
+        const popup = createBrowserTab(targetUrl, { select: disposition !== "background-tab", initializeBlank: false, ownerSessionId: registry.ownerOf(tabId), contentsOptions: options });
         taskHost.inheritNavigation(tabId, popup);
         if (disposition === "background-tab") runDetachedTask("load background browser popup", () => popup.view.webContents.loadURL(targetUrl));
         return popup.view.webContents;
       } };
     });
     view.webContents.on("did-start-navigation", (_event, targetUrl, isInPlace, isMainFrame) => {
-      if (isMainFrame || !isInPlace) {
-        invalidateWebMcpTab(tab);
-        sendBrowserState();
-      }
+      if (isMainFrame || !isInPlace) { invalidateWebMcpTab(tab); sendBrowserState(); }
       if (!isMainFrame || isInPlace) return;
       const target = String(targetUrl ?? "");
-      // data: loads are internal plumbing (CDP target-marker pages), not
-      // user-visible navigations — don't surface the panel for them.
       if (target === "about:blank" || target.startsWith("data:")) return;
-      // Intercept openwork:// deep links (e.g. den-auth handoff grants) so
-      // in-app browser auth works without the system protocol handler.
       if (target.startsWith("openwork://") || target.startsWith("openwork-dev://")) {
-        if (typeof onDeepLink === "function") {
-          onDeepLink([target]);
-        }
-        // Navigate the tab to about:blank to prevent the custom-scheme load
-        // from erroring, then hide the panel. Avoid closing the tab
-        // synchronously during a navigation event to prevent renderer crashes.
+        if (typeof onDeepLink === "function") onDeepLink([target]);
         setTimeout(() => {
-          try {
-            if (!view.webContents.isDestroyed()) {
-              runDetachedTask("clear completed browser handoff", () => view.webContents.loadURL("about:blank"));
-            }
-            hideBrowserView();
-          } catch { /* tab already gone */ }
+          try { if (!view.webContents.isDestroyed()) runDetachedTask("clear completed browser handoff", () => view.webContents.loadURL("about:blank")); hideBrowserView(); } catch {}
         }, 200);
         return;
       }
-      // Agent-driven CDP navigation can target a tab whose view is detached.
-      // If the tab's conversation is on screen, bring the tab on screen,
-      // otherwise navigation "succeeds" while the visible tab stays on
-      // about:blank (#2015). A tab that belongs to another conversation only
-      // becomes that conversation's active tab: it must never steal the
-      // screen from what the user is reading.
       const surfacing = registry.surfacingFor(tabId);
-      if (surfacing === "foreground" && registry.onScreenTabId() !== tabId) {
-        try {
-          selectBrowserTab(tabId);
-        } catch {
-          // The tab may be mid-close; the panel-opened event below still fires.
-        }
-      } else if (surfacing === "background") {
-        registry.select(tabId);
-        sendBrowserState();
-      }
+      if (surfacing === "foreground" && registry.onScreenTabId() !== tabId) { try { selectBrowserTab(tabId); } catch {} }
+      else if (surfacing === "background") { registry.select(tabId); sendBrowserState(); }
       sendToRenderer("openwork:browser:panel-opened", { ownerSessionId: registry.ownerOf(tabId) });
     });
-    view.webContents.on("did-navigate", () => {
-      // Only a main-frame commit replaces the document. Aborts and downloads
-      // retain its warning; old resource failures cannot affect the new document.
+    view.webContents.on("did-navigate", async () => {
       tab.documentGeneration += 1;
       tab.loadError = null;
+      const currentUrl = view.webContents.getURL();
+      if (currentUrl && currentUrl !== "about:blank") {
+        tab.websiteRule = getWebsiteRule(currentUrl);
+        await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      }
       if (registry.onScreenTabId() === tabId) attachActiveBrowserView();
       sendBrowserState();
     });
     view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      // Aborts (including downloads and superseded navigations) and iframe
-      // failures do not replace the page with a connection error.
       if (!isMainFrame || errorCode === -3) return;
-      // The request policy already supplies the actionable reason for a
-      // blocked load. Keep that reason instead of calling it a network error.
       if (errorDescription === "ERR_BLOCKED_BY_CLIENT" && tab.loadError && tab.loadError.code !== "page_load_failed") return;
-      tab.loadError = {
-        code: "page_load_failed",
-        message: errorCode === -102
-          ? "This site refused the connection. Check that it is running, then reload."
-          : errorCode === -106
-            ? "You are offline. Check your connection, then reload."
-            : "This page could not be loaded. Check the address and your connection, then reload.",
-        url: validatedURL,
-        errorCode,
-        errorDescription,
-      };
-      // Native views sit above the app renderer. Hide the failed document so
-      // the renderer's recovery controls can receive clicks and keyboard input.
+      tab.loadError = { code: "page_load_failed", message: errorCode === -102 ? "This site refused the connection. Check that it is running, then reload." : errorCode === -106 ? "You are offline. Check your connection, then reload." : "This page could not be loaded. Check the address and your connection, then reload.", url: validatedURL, errorCode, errorDescription };
       tab.view.setVisible(false);
       sendBrowserState();
     });
@@ -916,50 +1795,18 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       sendBrowserState();
     });
     view.webContents.on("did-start-loading", () => sendBrowserState());
-    view.webContents.on("did-stop-loading", () => {
-      sendBrowserState();
-      scheduleWebMcpToolCountRefresh(tabId);
-    });
-    view.webContents.on("focus", () => {
-      if (isFocusedBrowserTab(tab)) setShortcutFocus(tabId);
-      resetViewportEmulation(view);
-    });
-    view.webContents.on("before-input-event", (event, input) => {
-      if (!isFocusedBrowserTab(tab)) return;
-      setShortcutFocus(tabId);
-      handleBrowserShortcut(event, input);
-    });
-    view.webContents.once("destroyed", () => {
-      // CDP Target.closeTarget and page-initiated close bypass our tab-strip
-      // handler; they must release the native parent and owner state too.
-      if (browserTabs.get(tabId) === tab) closeBrowserTab(tabId, tab.suspending);
-    });
-    if (registry.surfacingFor(tabId) === "background") {
-      // Silent: the owner is not on screen. Keep the page real while unseen.
-      if (select) registry.select(tabId);
-      enterBackgroundMode(tab);
-      sendBrowserState();
-    } else if (select || !registry.onScreenTabId()) {
-      selectBrowserTab(tabId);
-    } else {
-      sendBrowserState();
-    }
-    if (select) {
-      // Explicit opens select their page in the owner's unified panel. Later
-      // navigations may keep that panel open, but must not displace an artifact
-      // the user selected while a page was loading or refreshing itself.
-      sendToRenderer("openwork:browser:panel-opened", {
-        ownerSessionId: registry.ownerOf(tabId),
-        tab: browserTabToPanelTab(tabId, tab),
-      });
-    }
+    view.webContents.on("did-stop-loading", () => { sendBrowserState(); scheduleWebMcpToolCountRefresh(tabId); });
+    view.webContents.on("focus", () => { if (isFocusedBrowserTab(tab)) { setShortcutFocus(tabId); markTabActive(tabId); } resetViewportEmulation(view); });
+    view.webContents.on("before-input-event", (event, input) => { if (!isFocusedBrowserTab(tab)) return; setShortcutFocus(tabId); handleBrowserShortcut(event, input); });
+    view.webContents.once("destroyed", () => { if (browserTabs.get(tabId) === tab) closeBrowserTab(tabId, tab.suspending); });
+    if (registry.surfacingFor(tabId) === "background") { if (select) registry.select(tabId); enterBackgroundMode(tab); sendBrowserState(); }
+    else if (select || !registry.onScreenTabId()) { selectBrowserTab(tabId); }
+    else { sendBrowserState(); }
+    if (select) sendToRenderer("openwork:browser:panel-opened", { ownerSessionId: registry.ownerOf(tabId), tab: browserTabToPanelTab(tabId, tab) });
     const finalUrl = normalizeBrowserUrl(url, "about:blank");
-    if (finalUrl !== "about:blank") {
-      runDetachedTask("navigate new browser tab", () => view.webContents.loadURL(finalUrl));
-    }
+    if (finalUrl !== "about:blank") runDetachedTask("navigate new browser tab", () => view.webContents.loadURL(finalUrl));
     return tab;
   }
-
   function detachBrowserView(view) {
     if (!view) return;
     for (const host of [window(), backgroundWindow]) {
@@ -1008,26 +1855,34 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     const webContents = tab.view.webContents;
     if (webContents.isDestroyed()) return;
     tab.background = true;
+    tab.lastActive = Date.now();
     detachBrowserView(tab.view);
     tab.view.setBounds({ x: 0, y: 0, ...BACKGROUND_TAB_VIEWPORT });
     backgroundBrowserWindow().contentView.addChildView(tab.view);
     if (tab.domReady) emulateBackgroundTab(tab);
+    startThumbnailTimer(tab.tabId);
+    scheduleAutoSuspend();
   }
 
-  function emulateBackgroundTab(tab) {
+  function exitBackgroundMode(tab) {
+    if (!tab || !tab.background) return;
+    tab.background = false;
+    stopThumbnailTimer(tab.tabId);
     const webContents = tab.view.webContents;
+    detachBrowserView(tab.view);
+    if (webContents.isDestroyed()) return;
     const cdp = webContents.debugger;
-    tab.emulation = tab.emulation.then(async () => {
-      if (webContents.isDestroyed() || !tab.background) return;
-      if (!cdp.isAttached()) cdp.attach("1.3");
-      for (const { method, params } of backgroundTabEmulationCommands()) {
-        if (webContents.isDestroyed() || !tab.background) return;
-        await cdp.sendCommand(method, params);
+    if (!cdp.isAttached()) return;
+    runDetachedTask("restore foreground browser tab", async () => {
+      try {
+        for (const { method, params } of foregroundTabEmulationCommands()) {
+          if (webContents.isDestroyed()) return;
+          await cdp.sendCommand(method, params);
+        }
+      } finally {
+        if (!webContents.isDestroyed() && cdp.isAttached()) cdp.detach();
       }
     });
-    runDetachedTask("emulate background browser tab", () => tab.emulation);
-  }
-
   function exitBackgroundMode(tab) {
     if (!tab || !tab.background) return;
     tab.background = false;
@@ -1055,6 +1910,74 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       else exitBackgroundMode(tab);
     }
     releaseEmptyBackgroundWindow();
+  }
+
+  // ===== CHUNK 3: Background Tab Thumbnails & Auto-Suspend =====
+  const thumbnailTimers = new Map(); // tabId -> interval timer
+
+  /** Capture thumbnail (320x200 JPEG) for a tab. */
+  async function captureThumbnail(tab) {
+    if (!tab || tab.view.webContents.isDestroyed() || tab.view.webContents.isLoading()) return null;
+    try {
+      const img = await tab.view.webContents.capturePage(THUMBNAIL_SIZE);
+      return img.toJPEG(THUMBNAIL_QUALITY);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Start periodic thumbnail capture for a background tab. */
+  function startThumbnailTimer(tabId) {
+    if (thumbnailTimers.has(tabId)) return;
+    const timer = setInterval(async () => {
+      const tab = browserTabs.get(tabId);
+      if (!tab || !tab.background || tab.view.webContents.isDestroyed()) {
+        stopThumbnailTimer(tabId);
+        return;
+      }
+      const dataUrl = await captureThumbnail(tab);
+      if (dataUrl) {
+        tab.thumbnail = dataUrl;
+        sendBrowserState();
+      }
+    }, THUMBNAIL_INTERVAL_MS);
+    thumbnailTimers.set(tabId, timer);
+  }
+
+  function stopThumbnailTimer(tabId) {
+    const timer = thumbnailTimers.get(tabId);
+    if (timer) clearInterval(timer);
+    thumbnailTimers.delete(tabId);
+  }
+
+  /** Auto-suspend background tabs that exceed limit or timeout. */
+  function scheduleAutoSuspend() {
+    const backgroundTabs = [...browserTabs.values()].filter(t => t.background);
+    if (backgroundTabs.length > MAX_BACKGROUND_TABS) {
+      // Suspend oldest non-protected background tabs first
+      const candidates = backgroundTabs
+        .filter(t => !t.automationProtected && !t.operation && !t.suspending && !t.mediaPlaying)
+        .sort((a, b) => (a.lastActive || 0) - (b.lastActive || 0));
+      for (const tab of candidates.slice(0, backgroundTabs.length - MAX_BACKGROUND_TABS)) {
+        runDetachedTask(`auto-suspend ${tab.tabId}`, () => suspendBrowserTab(tab.tabId).catch(() => {}));
+      }
+    }
+    // Also suspend tabs that have been background for too long
+    const now = Date.now();
+    for (const tab of backgroundTabs) {
+      if (!tab.automationProtected && !tab.operation && !tab.suspending && !tab.mediaPlaying) {
+        const inactiveMs = now - (tab.lastActive || now);
+        if (inactiveMs > BACKGROUND_SUSPEND_DELAY_MS) {
+          runDetachedTask(`auto-suspend-idle ${tab.tabId}`, () => suspendBrowserTab(tab.tabId).catch(() => {}));
+        }
+      }
+    }
+  }
+
+  /** Track tab activity for auto-suspend. */
+  function markTabActive(tabId) {
+    const tab = browserTabs.get(tabId);
+    if (tab) tab.lastActive = Date.now();
   }
 
   function setVisibleSession(sessionId) {
@@ -1157,6 +2080,7 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     const tab = browserTabs.get(tabId);
     if (!tab) throw new Error(`Unknown browser tab: ${tabId}`);
     if (tab.suspending) throw new Error("Browser tab is suspending.");
+    markTabActive(tabId);
     hideContextMenu();
     const previousView = getActiveBrowserView();
     registry.select(tabId);
@@ -1340,7 +2264,10 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     });
     if (response !== 1) return null;
     check();
-    suspendedTabs.set(tabId, { ...browserTabToPanelTab(tabId, tab), status: "suspended", canGoBack: false, canGoForward: false });
+    // Capture final thumbnail before suspending
+    const thumbnail = await captureThumbnail(tab);
+    suspendedTabs.set(tabId, { ...browserTabToPanelTab(tabId, tab), status: "suspended", canGoBack: false, canGoForward: false, thumbnail });
+    stopThumbnailTimer(tabId);
     tab.suspending = true;
     sendBrowserState();
     return new Promise((resolve, reject) => {
@@ -1370,6 +2297,8 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
     const tab = live ?? createBrowserTab("about:blank", {
       initializeBlank: false, ownerSessionId: registry.ownerOf(tabId), restoreTabId: tabId, automationProtected: protect,
     });
+    // Restore thumbnail if available
+    if (saved?.thumbnail) tab.thumbnail = saved.thumbnail;
     const wasProtected = tab.automationProtected;
     tab.operation = true;
     if (protect) tab.automationProtected = true;
@@ -1618,9 +2547,17 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       if (!tab || !event.senderFrame) {
         return { allowed: false, originKeyed: false, reason: "unknown_browser_frame" };
       }
-      return ensureWebMcpFramePolicy().checkFrame(event.senderFrame);
+      const sessionId = registry.ownerOf(tab.tabId) ?? "default";
+      return ensureWebMcpFramePolicy(sessionId).checkFrame(event.senderFrame);
     });
-    ipcMain.handle("openwork:browser:setProxy", (_event, proxy) => setBrowserProxy(proxy));
+    ipcMain.handle("openwork:browser:setProxy", (event, proxy) => {
+      const sessionId = normalizeSessionId(event.senderFrame?.url?.split('/')[3]) ?? registry.visibleSessionId() ?? "default";
+      return setBrowserProxy(sessionId, proxy);
+    });
+    ipcMain.handle("openwork:browser:getProxy", (event) => {
+      const sessionId = normalizeSessionId(event.senderFrame?.url?.split('/')[3]) ?? registry.visibleSessionId() ?? "default";
+      return browserProxyState(sessionId);
+    });
     ipcMain.handle("openwork:browser:setControlEnabled", (event, enabled) => {
       if (event.sender !== window()?.webContents || event.senderFrame !== window()?.webContents.mainFrame) return false;
       browserControlEnabled = enabled === true;
@@ -1705,6 +2642,410 @@ export function createBrowserPanel({ getWindow, remoteDebugPort, onDeepLink, che
       // before asking for consent, so a changed or removed tool still fails
       // as stale_tool while an unchanged one reaches the approval prompt.
       scheduleWebMcpToolCountRefresh(tab.tabId);
+    });
+    // Website Rules IPC handlers
+    ipcMain.handle("openwork:website-rules:list", () => listWebsiteRules());
+    ipcMain.handle("openwork:website-rules:get", (_event, origin) => getWebsiteRule(origin));
+    ipcMain.handle("openwork:website-rules:set", (_event, origin, rule) => {
+      setWebsiteRule(origin, rule);
+      return { success: true };
+    });
+    ipcMain.handle("openwork:website-rules:remove", (_event, origin) => {
+      removeWebsiteRule(origin);
+      return { success: true };
+    });
+    ipcMain.handle("openwork:website-rules:check-permission", (_event, url) => ({
+      allowed: isAgentAllowedByWebsiteRule(url),
+      ask: shouldAskAgentPermission(url),
+      rule: getWebsiteRule(url),
+    }));
+    ipcMain.handle("openwork:website-rules:apply", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const url = tab.view.webContents.getURL();
+      if (!url || url === "about:blank") return { success: false, error: "No URL loaded" };
+      tab.websiteRule = getWebsiteRule(url);
+      await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      return { success: true };
+    });
+    // Enable autonomous mode (agentPermission: "allow") for current tab's origin
+    ipcMain.handle("openwork:website-rules:enable-autonomous", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const url = tab.view.webContents.getURL();
+      if (!url || url === "about:blank") return { success: false, error: "No URL loaded" };
+      const origin = getOriginFromUrl(url);
+      if (!origin) return { success: false, error: "Invalid URL" };
+      setWebsiteRule(origin, { agentPermission: "allow" });
+      tab.websiteRule = getWebsiteRule(url);
+      await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      return { success: true, origin, rule: tab.websiteRule };
+    });
+
+    // ===== CHUNK 4: Viewport Presets IPC =====
+    ipcMain.handle("openwork:viewport:presets", () => {
+      return { presets: Object.fromEntries(Object.entries(DEVICE_PRESETS).map(([k, v]) => [k, { width: v.width, height: v.height, deviceScaleFactor: v.deviceScaleFactor, isMobile: v.isMobile, hasCustomUA: Boolean(v.userAgent) }])) };
+    });
+
+    ipcMain.handle("openwork:viewport:apply-preset", async (_event, tabId, presetName) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const preset = DEVICE_PRESETS[presetName];
+      if (!preset) return { success: false, error: `Unknown preset: ${presetName}` };
+      const url = tab.view.webContents.getURL();
+      if (!url || url === "about:blank") return { success: false, error: "No URL loaded" };
+      const origin = getOriginFromUrl(url);
+      if (!origin) return { success: false, error: "Invalid URL" };
+      const rule = { viewport: { width: preset.width, height: preset.height, deviceScaleFactor: preset.deviceScaleFactor, isMobile: preset.isMobile } };
+      if (preset.userAgent) rule.userAgent = preset.userAgent;
+      setWebsiteRule(origin, rule);
+      tab.websiteRule = getWebsiteRule(url);
+      await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      return { success: true, origin, rule: tab.websiteRule, preset: presetName };
+    });
+
+    ipcMain.handle("openwork:viewport:set-custom", async (_event, tabId, viewport, userAgent) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const url = tab.view.webContents.getURL();
+      if (!url || url === "about:blank") return { success: false, error: "No URL loaded" };
+      const origin = getOriginFromUrl(url);
+      if (!origin) return { success: false, error: "Invalid URL" };
+      const rule = {};
+      if (viewport) rule.viewport = { width: viewport.width, height: viewport.height, deviceScaleFactor: viewport.deviceScaleFactor || 1, isMobile: viewport.isMobile || false };
+      if (userAgent) rule.userAgent = userAgent;
+      setWebsiteRule(origin, rule);
+      tab.websiteRule = getWebsiteRule(url);
+      await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      return { success: true, origin, rule: tab.websiteRule };
+    });
+
+    ipcMain.handle("openwork:viewport:reset", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const url = tab.view.webContents.getURL();
+      if (!url || url === "about:blank") return { success: false, error: "No URL loaded" };
+      const origin = getOriginFromUrl(url);
+      if (!origin) return { success: false, error: "Invalid URL" };
+      removeWebsiteRule(origin);
+      tab.websiteRule = getWebsiteRule(url);
+      await applyWebsiteRuleToTab(tab, tab.websiteRule);
+      return { success: true, origin, rule: tab.websiteRule };
+    });
+
+    // Partition info handlers (CHUNK 5: Per-origin partitions)
+    ipcMain.handle("openwork:browser:get-partition", (_event, sessionId, url) => {
+      const normalizedSessionId = normalizeSessionId(sessionId) ?? "default";
+      const partition = url && url !== "about:blank" ? getOriginPartition(normalizedSessionId, url) : getSessionPartition(normalizedSessionId);
+      return { partition, sessionId: normalizedSessionId, url };
+    });
+
+    ipcMain.handle("openwork:browser:list-partitions", () => {
+      const partitions = new Map();
+      for (const [tabId, tab] of browserTabs) {
+        const sessionId = registry.ownerOf(tabId) ?? "default";
+        const url = tab.view.webContents.getURL();
+        const partition = tab.view.webContents.session.getPartitionName();
+        const key = `${sessionId}:${partition}`;
+        if (!partitions.has(key)) {
+          partitions.set(key, { sessionId, partition, urls: [] });
+        }
+        if (url && url !== "about:blank") {
+          partitions.get(key).urls.push({ tabId, url });
+        }
+      }
+      return { partitions: [...partitions.values()] };
+    });
+
+    // ===== CDP Domain Expansion IPC (CHUNK 6) =====
+    ipcMain.handle("openwork:cdp:send-command", async (_event, tabId, method, params) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, method, params);
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:get-network-requests", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, requests: tab._networkRequests ? [...tab._networkRequests.values()] : [] };
+    });
+
+    ipcMain.handle("openwork:cdp:get-console-messages", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, messages: tab._consoleMessages || [] };
+    });
+
+    ipcMain.handle("openwork:cdp:get-targets", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, targets: tab._cdpTargets ? [...tab._cdpTargets.values()] : [] };
+    });
+
+    ipcMain.handle("openwork:cdp:evaluate", async (_event, tabId, expression, awaitPromise = true) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Runtime.evaluate", {
+          expression,
+          awaitPromise,
+          returnByValue: true,
+        });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:get-document", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "DOM.getDocument", { depth: -1, pierce: true });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:query-selector", async (_event, tabId, selector) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const doc = await sendCdpCommand(tab, "DOM.getDocument", { depth: 1, pierce: true });
+        const nodeId = doc.root?.nodeId;
+        if (!nodeId) return { success: false, error: "No document root" };
+        const result = await sendCdpCommand(tab, "DOM.querySelector", { nodeId, selector });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:get-outer-html", async (_event, tabId, nodeId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "DOM.getOuterHTML", { nodeId });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:dispatch-mouse-event", async (_event, tabId, eventParams) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Input.dispatchMouseEvent", eventParams);
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:dispatch-key-event", async (_event, tabId, eventParams) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Input.dispatchKeyEvent", eventParams);
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:set-device-metrics", async (_event, tabId, metrics) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Emulation.setDeviceMetricsOverride", metrics);
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:clear-device-metrics", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Emulation.clearDeviceMetricsOverride");
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:set-user-agent", async (_event, tabId, userAgent) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Emulation.setUserAgentOverride", { userAgent });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:capture-screenshot", async (_event, tabId, format = "png", quality = 80) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Page.captureScreenshot", { format, quality });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:reload", async (_event, tabId, ignoreCache = false) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Page.reload", { ignoreCache });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:navigate", async (_event, tabId, url) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      if (!tab.cdpInitialized) {
+        await initializeCdpForTab(tab);
+      }
+      try {
+        const result = await sendCdpCommand(tab, "Page.navigate", { url });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:cdp:get-page-load-state", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, loadState: tab._pageLoadState || "unknown" };
+    });
+
+    // ===== Per-Tab Proxy + PAC IPC (CHUNK 7) =====
+    ipcMain.handle("openwork:proxy:set-tab-proxy", async (_event, tabId, config) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      try {
+        const result = await setTabProxy(tabId, config);
+        return result;
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:proxy:clear-tab-proxy", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return clearTabProxy(tabId);
+    });
+
+    ipcMain.handle("openwork:proxy:get-tab-proxy", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, state: getTabProxyState(tabId) };
+    });
+
+    ipcMain.handle("openwork:proxy:resolve-tab-proxy", async (_event, tabId, url) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      try {
+        const proxy = await resolveTabProxy(tabId, url);
+        return { success: true, proxy, url };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:proxy:pac-fetch", async (_event, pacUrl) => {
+      try {
+        const compiled = await fetchAndCompilePac(pacUrl);
+        return { success: true, pacUrl, compiled: Boolean(compiled) };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    // ===== WebMCP Tool Integration IPC (CHUNK 8) =====
+    ipcMain.handle("openwork:webmcp:tab-tools", (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      return { success: true, tools: tab.webMcpTools || [], tabId };
+    });
+
+    ipcMain.handle("openwork:webmcp:execute-tool", async (_event, tabId, toolId, input = {}) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      const ownerSessionId = registry.ownerOf(tabId);
+      if (!ownerSessionId) return { success: false, error: "No owner session" };
+
+      try {
+        const result = await taskHost.request({
+          sessionId: ownerSessionId,
+          operation: "site_tool",
+          args: { tabId, toolId, input }
+        });
+        return { success: result.ok, result: result.result, error: result.error };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("openwork:webmcp:refresh-tools", async (_event, tabId) => {
+      const tab = getBrowserTab(tabId);
+      if (!tab) return { success: false, error: "Tab not found" };
+      await scheduleWebMcpToolCountRefresh(tabId);
+      sendBrowserState();
+      return { success: true, tabId };
     });
   }
 

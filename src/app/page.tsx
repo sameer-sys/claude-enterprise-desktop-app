@@ -1177,7 +1177,6 @@ export default function Home() {
               if (followUpRes.ok && followUpRes.body) {
                 reader = followUpRes.body.getReader();
                 sseBuffer = '';
-                accumulatedContent = '';
                 switchedReader = true;
                 break;
               }
