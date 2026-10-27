@@ -1135,8 +1135,10 @@ class LocalBridgeServer {
               const style = window.getComputedStyle(el);
               if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
               const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+              const refId = 'e' + (elements.length + 1);
+              el.dataset.browserRef = refId;
               elements.push({
-                ref: 'e' + (elements.length + 1),
+                ref: refId,
                 tag: el.tagName.toLowerCase(),
                 name: label.slice(0, 150),
                 href: el.href || undefined,
@@ -1321,8 +1323,10 @@ class LocalBridgeServer {
               const style = window.getComputedStyle(el);
               if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
               const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+              const refId = 'e' + (elements.length + 1);
+              el.dataset.browserRef = refId;
               elements.push({
-                ref: 'e' + (elements.length + 1),
+                ref: refId,
                 tag: el.tagName.toLowerCase(),
                 name: label.slice(0, 150),
                 href: el.href || undefined,
@@ -1446,19 +1450,24 @@ class LocalBridgeServer {
       const res = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
-          el = document.querySelector(${JSON.stringify(args.selector)});
-        } else if (${JSON.stringify(args.ref || null)}) {
+          try { el = document.querySelector(${JSON.stringify(args.selector)}); } catch {}
+        }
+        if (!el && ${JSON.stringify(args.ref || null)}) {
           const refStr = String(${JSON.stringify(args.ref)}).trim();
           el = document.querySelector(\`[data-browser-ref="\${refStr}"]\`);
           if (!el) {
             const idx = parseInt(refStr.replace(/^e/i, '')) - 1;
-            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], video, ytd-thumbnail, #video-title'));
+            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], video'));
             el = candidates[idx];
           }
-        } else if (${JSON.stringify(args.text || null)}) {
+        }
+        if (!el && ${JSON.stringify(args.text || null)}) {
           const searchTxt = String(${JSON.stringify(args.text)}).toLowerCase().trim();
-          const all = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, h1, h2, h3, #video-title'));
-          el = all.find(item => item.innerText && item.innerText.toLowerCase().includes(searchTxt));
+          const all = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"], h1, h2, h3, h4, span, div, p'));
+          el = all.find(item => {
+            const t = (item.innerText || item.getAttribute('aria-label') || item.title || '').toLowerCase();
+            return t.includes(searchTxt);
+          });
         }
 
         if (!el && ${Boolean(args.x !== undefined && args.y !== undefined)}) {
@@ -1467,18 +1476,21 @@ class LocalBridgeServer {
 
         if (!el) return { success: false, error: 'Element not found on page' };
 
-        el.scrollIntoView({ behavior: 'instant', block: 'center' });
-        const rect = el.getBoundingClientRect();
+        // Ensure we click the interactive element, not an unclickable inner span or text wrapper
+        const target = el.closest('a, button, [role="button"], [role="link"], input, [tabindex]') || el;
+
+        target.scrollIntoView({ behavior: 'instant', block: 'center' });
+        const rect = target.getBoundingClientRect();
         const x = rect.x + rect.width / 2;
         const y = rect.y + rect.height / 2;
 
-        el.focus();
-        el.click();
+        target.focus();
+        target.click();
 
         return {
           success: true,
-          clicked: el.tagName.toLowerCase(),
-          text: (el.innerText || el.value || el.getAttribute('aria-label') || '').slice(0, 60),
+          clicked: target.tagName.toLowerCase(),
+          text: (target.innerText || target.value || target.getAttribute('aria-label') || target.title || '').slice(0, 60),
           x: Math.round(x),
           y: Math.round(y)
         };
@@ -1495,7 +1507,7 @@ class LocalBridgeServer {
         } catch (e) {}
       }
 
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 1200));
       const currentUrl = contents.getURL();
       const currentTitle = contents.getTitle();
       return `Clicked ${res.clicked} ("${res.text}"). Current Page: "${currentTitle}" (${currentUrl})`;
@@ -1508,6 +1520,8 @@ class LocalBridgeServer {
         throw new Error('Browser view is not active');
       }
       const contents = activeView.webContents;
+      try { contents.focus(); } catch {}
+
       const playRes = await contents.executeJavaScript(`(() => {
         // 1. Try HTML5 video or audio elements
         const media = Array.from(document.querySelectorAll('video, audio'));
@@ -1516,44 +1530,45 @@ class LocalBridgeServer {
             m.muted = false;
             const p = m.play();
             if (p !== undefined) p.catch(() => { m.muted = true; m.play(); });
-            return { success: true, method: 'video.play()' };
+            return { success: true, method: 'HTML5 media player' };
           } catch (e) {}
         }
 
-        // 2. Try YouTube specific play button
-        const ytpPlay = document.querySelector('button.ytp-play-button, ytd-player, .html5-video-player, ytd-watch-flexy');
-        if (ytpPlay) {
-          ytpPlay.click();
-          return { success: true, method: 'ytp-play-button' };
-        }
-
-        // 3. Try clicking first video thumbnail if on search results
-        const firstThumb = document.querySelector('ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail, a[href*="/watch?v="]');
-        if (firstThumb) {
-          firstThumb.click();
-          return { success: true, method: 'clicked first video thumbnail' };
-        }
-
-        // 4. Try any button matching "Play"
-        const playBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b =>
-          /play/i.test(b.getAttribute('aria-label') || b.innerText || '')
-        );
+        // 2. Look for any active play button or video player element
+        const playBtn = Array.from(document.querySelectorAll('button, [role="button"], [aria-label*="play" i], [title*="play" i]')).find(b => {
+          const r = b.getBoundingClientRect();
+          if (!r.width || !r.height) return false;
+          const label = (b.getAttribute('aria-label') || b.title || b.innerText || '').toLowerCase();
+          return label.includes('play');
+        });
         if (playBtn) {
           playBtn.click();
-          return { success: true, method: 'play button' };
+          return { success: true, method: 'media play button' };
         }
 
-        return { success: false, error: 'No media player or video found' };
+        // 3. If on a listing or search results page without an active video player:
+        // Click the first prominent media item/link to open the media player!
+        const mediaLink = Array.from(document.querySelectorAll('a[href*="/watch"], a[href*="/video"], a[href*="/track"], #video-title, ytd-thumbnail, ytd-video-renderer a, [data-testid*="play" i]')).find(el => {
+          const r = el.getBoundingClientRect();
+          return r.width > 20 && r.height > 20;
+        });
+        if (mediaLink) {
+          const target = mediaLink.closest('a') || mediaLink;
+          target.click();
+          return { success: true, method: 'opened primary media link from page' };
+        }
+
+        return { success: false, error: 'No media player or video found on current page' };
       })()`);
 
-      // Also send spacebar and 'k' keys to trigger standard media playback
+      // Dispatch standard play/pause shortcuts (Space and 'k')
       contents.sendInputEvent({ type: 'keyDown', keyCode: 'k' });
       contents.sendInputEvent({ type: 'keyUp', keyCode: 'k' });
 
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 1200));
       return playRes.success
-        ? `▶️ Started media playback via ${playRes.method} on "${contents.getTitle()}".`
-        : `Sent play command (Key: k / Space) to media player on "${contents.getTitle()}".`;
+        ? `▶️ Started media playback via ${playRes.method} on "${contents.getTitle()}" (${contents.getURL()}).`
+        : `Media play: ${playRes.error || 'Triggered standard play keys'}. Current Page: "${contents.getTitle()}".`;
     }
 
     // C3. Browser Search (YouTube, GitHub, Google, Wikipedia)
@@ -1604,12 +1619,15 @@ class LocalBridgeServer {
       const pressEnter = args.pressEnter === true;
       const clearFirst = args.clearFirst !== false;
 
-      // 1. Focus element and select existing text in DOM
+      try { contents.focus(); } catch {}
+
+      // 1. Focus element and set text in DOM
       const prepRes = await contents.executeJavaScript(`(() => {
         let el = null;
         if (${JSON.stringify(args.selector || null)}) {
-          el = document.querySelector(${JSON.stringify(args.selector)});
-        } else if (${JSON.stringify(args.ref || null)}) {
+          try { el = document.querySelector(${JSON.stringify(args.selector)}); } catch {}
+        }
+        if (!el && ${JSON.stringify(args.ref || null)}) {
           const ref = ${JSON.stringify(args.ref)};
           el = document.querySelector('[data-browser-ref="' + ref + '"]');
           if (!el) {
@@ -1617,7 +1635,8 @@ class LocalBridgeServer {
             const idx = parseInt(String(ref).replace(/^e/i, '')) - 1;
             el = candidates[idx] || document.querySelector('input, textarea');
           }
-        } else {
+        }
+        if (!el) {
           el = document.activeElement || document.querySelector('input, textarea');
         }
         if (!el) return { success: false, error: 'No input field found' };
@@ -1629,42 +1648,79 @@ class LocalBridgeServer {
           else if (el.isContentEditable) el.innerText = '';
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-          if (typeof el.select === 'function') el.select();
-          else if (el.isContentEditable) document.getSelection()?.selectAllChildren(el);
         }
+
+        // Set value directly in DOM for 100% reliable execution (never hangs!)
+        if (el.value !== undefined) {
+          el.value = ${JSON.stringify(text)};
+        } else if (el.isContentEditable) {
+          el.innerText = ${JSON.stringify(text)};
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
 
         return { success: true, tag: el.tagName.toLowerCase() };
       })()`);
 
       if (!prepRes.success) return `Type failed: ${prepRes.error}`;
 
-      // 2. Use native insertText if available for authentic keystrokes
-      try {
-        if (typeof contents.insertText === 'function') {
-          await contents.insertText(text);
-        } else {
-          throw new Error('insertText unavailable');
-        }
-      } catch {
-        // Fallback to DOM input dispatch
+      // 2. Press Enter if requested and auto-observe resulting page
+      if (pressEnter) {
+        try {
+          contents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+          contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        } catch {}
+
         await contents.executeJavaScript(`(() => {
-          const el = document.activeElement;
+          const el = document.activeElement || document.querySelector('input, textarea');
           if (el) {
-            if (el.value !== undefined) el.value = ${JSON.stringify(text)};
-            else if (el.isContentEditable) el.innerText = ${JSON.stringify(text)};
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            if (el.form && typeof el.form.requestSubmit === 'function') {
+              try { el.form.requestSubmit(); } catch { el.form.submit(); }
+            }
           }
         })()`);
-      }
 
-      // 3. Press Enter if requested
-      if (pressEnter) {
-        contents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-        contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-        await new Promise(r => setTimeout(r, 1000));
-        return `Typed "${text}" and pressed Enter. Current Page: "${contents.getTitle()}" (${contents.getURL()})`;
+        // Wait for page to navigate / update after Enter
+        await new Promise(r => setTimeout(r, 1600));
+
+        // Auto-observe resulting page so the agent receives the new state immediately!
+        try {
+          const observation = await contents.executeJavaScript(`(() => {
+            const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
+            const elements = [];
+            for (let i = 0; i < candidates.length && elements.length < 80; i++) {
+              const el = candidates[i];
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+              const refId = 'e' + (elements.length + 1);
+              el.dataset.browserRef = refId;
+              const label = el.getAttribute('aria-label') || (el.innerText || '').trim() || el.placeholder || el.value || el.name || '';
+              elements.push({
+                ref: refId,
+                tag: el.tagName.toLowerCase(),
+                name: label.slice(0, 150),
+                href: el.href || undefined,
+              });
+            }
+            return {
+              title: document.title,
+              url: window.location.href,
+              textSnippet: (document.body ? document.body.innerText : '').slice(0, 2500),
+              elements,
+            };
+          })()`);
+
+          const elementsList = Array.isArray(observation.elements) && observation.elements.length > 0
+            ? observation.elements.map(el => `[${el.ref}] <${el.tag}> ${el.name || ''} ${el.href ? '(' + el.href + ')' : ''}`).join('\n')
+            : 'None detected';
+
+          return `Typed "${text}" and submitted. Current Page: "${observation.title}" (${observation.url})\n\nVisible Elements:\n${elementsList}\n\nPage Text Preview:\n${observation.textSnippet}`;
+        } catch {
+          return `Typed "${text}" and pressed Enter. Current Page: "${contents.getTitle()}" (${contents.getURL()})`;
+        }
       }
 
       return `Typed "${text}" into ${prepRes.tag}`;

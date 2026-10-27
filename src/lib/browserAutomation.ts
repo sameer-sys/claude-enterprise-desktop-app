@@ -138,7 +138,7 @@ export async function browserObserve(): Promise<any> {
   const evalResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: `(() => {
       const candidates = Array.from(document.querySelectorAll(
-        'a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], video, ytd-thumbnail, #video-title, a#thumbnail, ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail, [aria-label*="play" i], [aria-label*="search" i]'
+        'a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], video, ytd-thumbnail, #video-title, [aria-label*="play" i], [aria-label*="search" i]'
       ));
       const elements = [];
       for (let i = 0; i < candidates.length && elements.length < 100; i++) {
@@ -197,12 +197,12 @@ export async function browserClick(ref?: string, selector?: string, text?: strin
     expression: `(() => {
       let target = null;
       if (${JSON.stringify(selector || null)}) {
-        target = document.querySelector(${JSON.stringify(selector || '')});
+        try { target = document.querySelector(${JSON.stringify(selector || '')}); } catch {}
       } else if (${JSON.stringify(ref || null)}) {
         const refStr = ${JSON.stringify(ref || '')};
         target = document.querySelector('[data-browser-ref="' + refStr + '"]');
         if (!target) {
-          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], video, ytd-thumbnail, #video-title, [aria-label*="play" i]'));
+          const candidates = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]'));
           const visible = candidates.filter(el => {
             const r = el.getBoundingClientRect();
             return r.width > 0 && r.height > 0;
@@ -210,32 +210,17 @@ export async function browserClick(ref?: string, selector?: string, text?: strin
           const idx = parseInt(String(refStr).replace(/^e/i, '')) - 1;
           target = visible[idx];
         }
-      } else {
-        // No ref or selector provided - try to find YouTube video/play elements
-        const videoSelectors = [
-          'ytd-thumbnail[href]',
-          '#video-title',
-          'a#thumbnail',
-          'ytd-rich-item-renderer a#thumbnail',
-          'ytd-video-renderer a#thumbnail',
-          'video',
-          'button.ytp-play-button',
-          '[aria-label*="play" i]',
-          '[aria-label*="Play" i]'
-        ];
-        for (const sel of videoSelectors) {
-          const els = document.querySelectorAll(sel);
-          for (const el of els) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              target = el;
-              break;
-            }
-          }
-          if (target) break;
-        }
+      } else if (${JSON.stringify(text || null)}) {
+        const searchTxt = String(${JSON.stringify(text || '')}).toLowerCase().trim();
+        const all = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"], h1, h2, h3, h4, span, div, p'));
+        target = all.find(item => {
+          const t = (item.innerText || item.getAttribute('aria-label') || item.title || '').toLowerCase();
+          return t.includes(searchTxt);
+        });
       }
       if (!target) return "Element not found on page";
+
+      target = target.closest('a, button, [role="button"], [role="link"], input, [tabindex]') || target;
 
       target.scrollIntoView({ behavior: 'instant', block: 'center' });
       const rect = target.getBoundingClientRect();
@@ -292,22 +277,6 @@ export async function browserPlay(selector?: string): Promise<string> {
 
   const evalResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: `(() => {
-      // First, check if we're on a YouTube video page
-      const isYouTubeVideo = window.location.href.includes('youtube.com/watch') || window.location.href.includes('youtu.be/');
-
-      // If on YouTube but not on a video page, try to find and click a video
-      if (window.location.href.includes('youtube.com') && !isYouTubeVideo) {
-        const videoLinks = document.querySelectorAll('ytd-thumbnail[href], a#thumbnail, ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail');
-        for (const link of videoLinks) {
-          const rect = link.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            link.click();
-            return 'Clicked YouTube video to navigate to video page. Will attempt playback after navigation.';
-          }
-        }
-      }
-
-      // Now try to play media on current page
       const media = Array.from(document.querySelectorAll('video, audio'));
       for (const m of media) {
         try {
@@ -317,32 +286,23 @@ export async function browserPlay(selector?: string): Promise<string> {
           return 'Started video playback.';
         } catch (e) {}
       }
-
-      // Try YouTube player
-      const ytp = document.querySelector('button.ytp-play-button, ytd-player, .html5-video-player');
-      if (ytp) {
-        ytp.click();
-        return 'Clicked YouTube play button.';
+      const playBtn = Array.from(document.querySelectorAll('button, [role="button"], [aria-label*="play" i], [title*="play" i]')).find(b => {
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && (b.getAttribute('aria-label') || b.title || b.innerText || '').toLowerCase().includes('play');
+      });
+      if (playBtn) {
+        playBtn.click();
+        return 'Clicked play button.';
       }
-
-      // Try to find video element by selector if provided
-      if (${JSON.stringify(selector || null)}) {
-        const target = document.querySelector(${JSON.stringify(selector || '')});
-        if (target && (target.tagName === 'VIDEO' || target.tagName === 'AUDIO')) {
-          try {
-            target.muted = false;
-            const p = target.play();
-            if (p !== undefined) p.catch(() => { target.muted = true; target.play(); });
-            return 'Started video playback on specified element.';
-          } catch (e) {}
-        }
-        if (target) {
-          target.click();
-          return 'Clicked specified element.';
-        }
+      const mediaLink = Array.from(document.querySelectorAll('a[href*="/watch"], a[href*="/video"], a[href*="/track"], #video-title, ytd-thumbnail, [data-testid*="play" i]')).find(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 20 && r.height > 20;
+      });
+      if (mediaLink) {
+        (mediaLink.closest('a') || mediaLink).click();
+        return 'Opened primary media link for playback.';
       }
-
-      return 'No media player found on current page.';
+      return 'No media player or video link found.';
     })()`,
     returnByValue: true
   });
@@ -424,8 +384,13 @@ export async function browserType(text: string, ref?: string, selector?: string,
         target.dispatchEvent(new Event('change', { bubbles: true }));
         if (${Boolean(pressEnter)}) {
           target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+          target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           const form = target.closest('form');
-          if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          if (form && typeof form.requestSubmit === 'function') {
+            try { form.requestSubmit(); } catch { form.submit(); }
+          } else if (form) {
+            form.submit();
+          }
         }
         return "Typed: " + ${JSON.stringify(text)};
       }
@@ -436,7 +401,14 @@ export async function browserType(text: string, ref?: string, selector?: string,
 
   const typeResult = evalResult?.result?.value || 'Type evaluated';
   if (pressEnter) {
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 1600));
+    try {
+      const obs = await browserObserve();
+      const elementsList = Array.isArray(obs?.elements) && obs.elements.length > 0
+        ? obs.elements.map((el: any) => `[${el.ref}] <${el.tag}> ${el.name || el.text || ''} ${el.href ? '(' + el.href + ')' : ''}`).join('\n')
+        : 'None detected';
+      return `Typed "${text}" and submitted. Current Page: "${obs?.title || 'Unknown'}" (${obs?.url || ''})\n\nVisible Interactive Elements:\n${elementsList}\n\nPage Text Preview:\n${obs?.textSnippet || ''}`;
+    } catch {}
     try {
       const pageState = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
         expression: `JSON.stringify({ title: document.title, url: window.location.href })`,
