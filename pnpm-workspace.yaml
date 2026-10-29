@@ -132,7 +132,7 @@ allowBuilds:
   "@scarf/scarf": false
   "@sentry/cli": true
   "@whiskeysockets/baileys": true
-  better-sqlite3: true
+  better-sqlite3: false
   # posthog-js -> core-js: skip the optional funding-message postinstall.
   core-js: false
   electron: true
