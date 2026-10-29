@@ -35,7 +35,7 @@
     "@daytonaio/sdk": "^0.201.0",
     "@types/node": "^24.0.0",
     "@types/ws": "8.18.1",
-    "esbuild": "0.25.12",
+    "esbuild": "0.28.2",
     "tsx": "^4.23.1",
     "typescript": "^5.5.4"
   }
