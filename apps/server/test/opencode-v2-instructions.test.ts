@@ -84,3 +84,14 @@ test("configured instructions never send local or secret files", async () => {
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+
+test("V2 operating instructions require real tool use and evidence-based verification", () => {
+  const instructions = buildOpenWorkV2Instructions(true);
+  assert.match(instructions.operatingInstructions, /When a suitable tool is available, use it and carry the task through to a verified result/);
+  assert.match(instructions.operatingInstructions, /Tool descriptions and live discovery results are the source of truth/);
+  assert.match(instructions.operatingInstructions, /Use only tools exposed by this runtime or returned by a live discovery call/);
+  assert.match(instructions.operatingInstructions, /Prefer a focused feature branch and pull request/);
+  assert.match(instructions.operatingInstructions, /verify the observable outcome/);
+  assert.match(instructions.operatingInstructions, /Never describe a build pass as proof that every feature works/);
+});
