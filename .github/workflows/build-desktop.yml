@@ -77,6 +77,15 @@ jobs:
       - name: Typecheck app
         run: pnpm --filter @openwork/app typecheck
 
+      - name: Check Electron bridge contract
+        run: pnpm --filter @openwork/desktop check:electron
+
+      - name: Test desktop session runner
+        run: pnpm --filter @openwork/desktop test:session-runner
+
+      - name: Typecheck Electron main process
+        run: pnpm --filter @openwork/desktop typecheck:electron
+
       - name: Build Electron desktop
         run: pnpm --filter @openwork/desktop build:electron
 
