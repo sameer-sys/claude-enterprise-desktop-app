@@ -76,9 +76,10 @@ test("configured instructions never send local or secret files", async () => {
   try {
     execFileSync("git", ["init", "-q"], { cwd: workspace });
     await mkdir(join(workspace, "rules"));
-    await writeFile(join(workspace, ".gitignore"), "private.md\n");
+    await writeFile(join(workspace, ".gitignore"), "private.md\nrules/private.md\n");
     await writeFile(join(workspace, "CONTRIBUTING.md"), "shared rules");
     await writeFile(join(workspace, "private.md"), "ignored notes");
+    await writeFile(join(workspace, "rules", "private.md"), "nested ignored notes");
     await writeFile(join(workspace, ".env"), "TOKEN=secret");
     await writeFile(join(workspace, "deploy.env.md"), "TOKEN=secret");
     await writeFile(join(workspace, "credentials.json"), "{\"token\":\"secret\"}");
