@@ -31,6 +31,15 @@ test("V2 instructions do not claim Connect is available when disconnected", () =
     "OpenWork Connect is not connected for this request. Do not claim remote capabilities are available.");
 });
 
+test("V2 browser guidance completes multi-stage work through observe-act-verify", () => {
+  const instructions = buildOpenWorkV2Instructions(true);
+  assert.match(instructions.operatingInstructions, /Keep going across page transitions until the user's requested outcome is visibly complete/);
+  assert.match(instructions.operatingInstructions, /Never repeat a click, form submission, upload, purchase, message send/);
+  assert.match(instructions.browser, /real Chromium mouse input/);
+  assert.match(instructions.browser, /Repeat this observe → act → verify cycle across every page/);
+  assert.match(instructions.browser, /If the receipt reports navigation, still_loading/);
+});
+
 test("configured instructions load workspace files the engine skips", async () => {
   const base = await mkdtemp(join(tmpdir(), "openwork-configured-instructions-"));
   try {
