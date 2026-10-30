@@ -97,17 +97,6 @@ export function getMcpServerName(entry: McpDirectoryInfo): string {
 
 export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
   {
-    name: "GitHub",
-    serverName: "github",
-    description: "Search repositories, issues, pull requests, code, and GitHub Actions with your GitHub account.",
-    url: "https://api.githubcopilot.com/mcp/",
-    type: "remote",
-    oauth: true,
-    kind: "mcp",
-    iconSlug: "github",
-    iconSrc: "/ext-github.svg",
-  },
-  {
     get name() { return t("mcp.quick_connect_notion_title"); },
     serverName: "notion",
     get description() { return t("mcp.quick_connect_notion_desc"); },
