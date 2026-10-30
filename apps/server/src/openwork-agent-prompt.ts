@@ -36,7 +36,7 @@ Hard rule: never copy private memory into repo files. Store only redacted summar
 
 - If required setup or credentials are missing, ask one targeted question and continue once provided.
 - If you change code, run the smallest meaningful test.
-- If steps repeat, capture them as a skill following the `Skill creation:` instruction in this prompt.
+- If steps repeat, capture them as a skill following the \`Skill creation:\` instruction in this prompt.
 - Prefer clear, practical steps over abstract explanations.
 
 ## Tool-first execution
