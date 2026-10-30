@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { glob, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { Minimatch } from "minimatch";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { workspaceOpencodeConfigCandidates } from "@openwork/paths";
 import constants from "../../../constants.json" with { type: "json" };
@@ -54,7 +54,7 @@ async function matchFiles(pattern: string, cwd: string) {
           continue;
         }
         if (!info.isFile() && !info.isSymbolicLink()) continue;
-        const relativePath = relative(cwd, candidate).split(sep).join("/");
+        const relativePath = relative(cwd, candidate).replaceAll("\\", "/");
         if (matcher.match(relativePath)) matches.push(relativePath);
       }
     }
@@ -70,8 +70,8 @@ async function matchFiles(pattern: string, cwd: string) {
 }
 
 function insideRoot(root: string, path: string) {
-  const rel = relative(root, path);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  const rel = relative(root, path).replaceAll("\\", "/");
+  return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel);
 }
 
 // Instruction documents only, never a file the engine asks before any agent
@@ -122,7 +122,7 @@ export async function readConfiguredInstructions(workspaceRoot: string): Promise
     if (/^https?:\/\//i.test(source)) continue;
     const expanded = source.startsWith("~/") ? join(homedir(), source.slice(2)) : source;
     // Bun's glob ignores absolute patterns, so every match starts from the workspace.
-    const pattern = (isAbsolute(expanded) ? relative(workspaceRoot, expanded) : expanded).split(sep).join("/");
+    const pattern = (isAbsolute(expanded) ? relative(workspaceRoot, expanded) : expanded).replaceAll("\\", "/");
     if (pattern === ".." || pattern.startsWith("../")) continue;
     for (const match of await matchFiles(pattern, workspaceRoot)) {
       const path = resolve(workspaceRoot, match);
