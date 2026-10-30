@@ -44,9 +44,9 @@ async function matchFiles(pattern: string, cwd: string) {
     const matcher = new Minimatch(pattern, { dot: true });
     const matches: string[] = [];
     async function visit(directory: string): Promise<void> {
-      const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+      const entries = await readdir(directory).catch(() => []);
       for (const entry of entries) {
-        const candidate = join(directory, entry.name);
+        const candidate = join(directory, entry);
         const info = await lstat(candidate).catch(() => null);
         if (!info) continue;
         if (info.isDirectory()) {
