@@ -47,11 +47,13 @@ async function matchFiles(pattern: string, cwd: string) {
       const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
         const candidate = join(directory, entry.name);
-        if (entry.isDirectory()) {
+        const info = await lstat(candidate).catch(() => null);
+        if (!info) continue;
+        if (info.isDirectory()) {
           await visit(candidate);
           continue;
         }
-        if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+        if (!info.isFile() && !info.isSymbolicLink()) continue;
         const relativePath = relative(cwd, candidate).split(sep).join("/");
         if (matcher.match(relativePath)) matches.push(relativePath);
       }
