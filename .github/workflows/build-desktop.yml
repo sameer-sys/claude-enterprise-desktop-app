@@ -62,6 +62,18 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify live provider sync
+        run: pnpm --filter openwork-server test:live-provider-sync
+
+      - name: Verify live provider Settings handoff
+        run: pnpm --dir apps/app exec bun test tests/live-provider-sync-session-handoff.test.ts
+
+      - name: Typecheck server
+        run: pnpm --filter openwork-server typecheck
+
+      - name: Typecheck app
+        run: pnpm --filter @openwork/app typecheck
+
       - name: Build Electron desktop
         run: pnpm --filter @openwork/desktop build:electron
 
