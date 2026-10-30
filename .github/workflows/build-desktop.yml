@@ -4,6 +4,12 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release after the installer is built"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -16,47 +22,64 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 24.22.1
-        uses: actions/setup-node@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
           node-version: 24.22.1
+          cache: pnpm
 
-      - name: Install Dependencies
-        run: |
-          npm install --legacy-peer-deps
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
 
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
+      - name: Build Electron desktop
+        run: pnpm --filter @openwork/desktop build:electron
 
-      - name: Package Electron Installer with electron-builder
-        run: |
-          npm run electron:build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package Windows installer
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.yml --win --x64 --publish never
 
-      - name: Locate Generated Installer
+      - name: Locate generated installer
         id: locate-installer
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path "dist-electron" -Filter "*.exe" -Recurse | Select-Object -First 1
-          if ($installer) {
-            echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
-            Write-Host "Found installer at: $($installer.FullName)"
-          } else {
-            Write-Host "No installer found"
+          $installer = Get-ChildItem -Path "apps/desktop/dist-electron" -Filter "*.exe" -Recurse |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "Electron packaging completed without producing a Windows installer in apps/desktop/dist-electron."
           }
+          "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "Found installer at: $($installer.FullName)"
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-enterprise-desktop-windows
+          path: apps/desktop/dist-electron/**
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Create GitHub Release with Desktop Installer
-        if: steps.locate-installer.outputs.installer_path != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "Claude Enterprise Desktop Windows v1.0.${{ github.run_number }}"
+          tag_name: v1.0.${{ github.run_number }}.${{ github.run_attempt }}
+          name: "Claude Enterprise Desktop Windows v1.0.${{ github.run_number }}.${{ github.run_attempt }}"
           body: |
-            ## 💻 Claude Enterprise Desktop App Update (Windows)
-            
-            - **Build Number**: ${{ github.run_number }}
-            - **Commit**: ${{ github.sha }}
-            - Download and run the attached installer `.exe` below to upgrade your Desktop Workspace.
+            ## Claude Enterprise Desktop App Update (Windows)
+
+            - Build: ${{ github.run_number }}.${{ github.run_attempt }}
+            - Commit: ${{ github.sha }}
+            - Installer built by the Windows desktop packaging workflow.
           files: ${{ steps.locate-installer.outputs.installer_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
