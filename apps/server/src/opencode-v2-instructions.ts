@@ -132,7 +132,7 @@ export async function readConfiguredInstructions(workspaceRoot: string): Promise
       if (!instructionDocument(path) || !instructionDocument(real)) continue;
       seen.add(real);
       // Git judges the file itself: a link's own path may cross a linked folder.
-      files.push({ path, real, name: relative(root, real) });
+      files.push({ path, real, name: relative(root, real).replaceAll("\\", "/") });
     }
   }
   const ignored = await gitIgnored(workspaceRoot, files.map((file) => file.name));
