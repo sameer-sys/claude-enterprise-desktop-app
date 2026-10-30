@@ -11,7 +11,7 @@ test("timeoutMs null leaves browser bridge requests unbounded when no abort sign
   const discovery = join(directory, "openwork-ui-control.json");
   const previousDiscovery = process.env.OPENWORK_UI_CONTROL_DISCOVERY;
   const previousFetch = globalThis.fetch;
-  let observedSignal: AbortSignal | null | undefined = null;
+  const observedSignals: Array<AbortSignal | null | undefined> = [];
 
   try {
     await writeFile(discovery, JSON.stringify({
@@ -20,7 +20,7 @@ test("timeoutMs null leaves browser bridge requests unbounded when no abort sign
     }));
     process.env.OPENWORK_UI_CONTROL_DISCOVERY = discovery;
     globalThis.fetch = (async (_input, init) => {
-      observedSignal = init?.signal;
+      observedSignals.push(init?.signal);
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -34,7 +34,17 @@ test("timeoutMs null leaves browser bridge requests unbounded when no abort sign
     });
 
     assert.deepEqual(result, { ok: true });
-    assert.equal(observedSignal, undefined);
+    assert.equal(observedSignals[0], undefined);
+
+    const controller = new AbortController();
+    const cancellableResult = await uiBridgeRequest("/browser/task", {
+      method: "POST",
+      body: { operation: "observe" },
+      timeoutMs: null,
+      signal: controller.signal,
+    });
+    assert.deepEqual(cancellableResult, { ok: true });
+    assert.equal(observedSignals[1], controller.signal);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousDiscovery === undefined) delete process.env.OPENWORK_UI_CONTROL_DISCOVERY;
