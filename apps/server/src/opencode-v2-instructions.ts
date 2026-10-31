@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
-import { glob, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { glob, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { Minimatch } from "minimatch";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { workspaceOpencodeConfigCandidates } from "@openwork/paths";
@@ -27,45 +26,18 @@ const CONFIGURED_INSTRUCTIONS_MAX_BYTES = 192 * 1024;
 
 const execFileAsync = promisify(execFile);
 
-// Bun's node:fs glob never matches dot paths such as `.opencode/AGENTS.md`.
+// Bun's native Glob can omit wildcard matches on Windows. Use Node 24's
+// stable fs/promises glob implementation there; it shares the repository's
+// own filesystem boundary/symlink checks below. On Bun/Linux retain dot-aware
+// matching for OpenCode's hidden .opencode instruction paths.
 async function matchFiles(pattern: string, cwd: string) {
-  // Bun's Windows glob scanner can silently omit wildcard matches while still
-  // returning literal files. Use a bounded, symlink-safe walk on Windows and
-  // keep the native glob implementations on platforms where they are reliable.
-  if (process.platform === "win32") {
-    const segments = pattern.split("/");
-    const firstMagic = segments.findIndex((segment) => /[*?{}()[\]!+@]/.test(segment));
-    if (firstMagic < 0) {
-      const candidate = resolve(cwd, pattern);
-      const info = await lstat(candidate).catch(() => null);
-      return info && (info.isFile() || info.isSymbolicLink()) ? [pattern] : [];
-    }
-    const scanRoot = join(cwd, ...segments.slice(0, firstMagic));
-    const matcher = new Minimatch(pattern, { dot: true });
-    const matches: string[] = [];
-    async function visit(directory: string): Promise<void> {
-      const entries = await readdir(directory).catch(() => []);
-      for (const entry of entries) {
-        const candidate = join(directory, entry);
-        const info = await lstat(candidate).catch(() => null);
-        if (!info) continue;
-        if (info.isDirectory()) {
-          await visit(candidate);
-          continue;
-        }
-        if (!info.isFile() && !info.isSymbolicLink()) continue;
-        const relativePath = relative(cwd, candidate).replaceAll("\\", "/");
-        if (matcher.match(relativePath)) matches.push(relativePath);
-      }
-    }
-    await visit(scanRoot);
-    return matches.sort();
-  }
   const matches: string[] = [];
-  const found = typeof process.versions.bun === "string"
-    ? new Bun.Glob(pattern).scan({ cwd, dot: true })
-    : glob(pattern, { cwd });
-  for await (const match of found) matches.push(match);
+  const found = process.platform === "win32"
+    ? glob(pattern, { cwd })
+    : typeof process.versions.bun === "string"
+      ? new Bun.Glob(pattern).scan({ cwd, dot: true })
+      : glob(pattern, { cwd });
+  for await (const match of found) matches.push(String(match).replaceAll("\\", "/"));
   return matches.sort();
 }
 
