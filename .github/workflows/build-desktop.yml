@@ -3,60 +3,151 @@ name: Build & Release Windows Desktop App
 on:
   push:
     branches: ["main"]
+    paths:
+      - ".github/workflows/build-desktop.yml"
+      - "apps/desktop/**"
+      - "apps/server/**"
+      - "apps/app/**"
+      - "packages/**"
+      - "constants.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/build-desktop.yml"
+      - "apps/desktop/**"
+      - "apps/server/**"
+      - "apps/app/**"
+      - "packages/**"
+      - "constants.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release after the installer is built"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
-          node-version: 20
+          version: 11.4.0
 
-      - name: Install Dependencies
-        run: |
-          npm install --legacy-peer-deps
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.22.1
+          cache: pnpm
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
 
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Package Electron Installer with electron-builder
-        run: |
-          npm run electron:build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run server readiness tests
+        run: pnpm --filter openwork-server test:readiness
 
-      - name: Locate Generated Installer
-        id: locate-installer
+      - name: Verify live provider sync
+        run: pnpm --filter openwork-server test:live-provider-sync
+
+      - name: Verify live provider Settings handoff
+        run: pnpm --dir apps/app exec bun test tests/live-provider-sync-session-handoff.test.ts
+
+      - name: Typecheck server
+        run: pnpm --filter openwork-server typecheck
+
+      - name: Typecheck app
+        run: pnpm --filter @openwork/app typecheck
+
+      - name: Test transcript readback excludes reasoning
+        run: pnpm --dir apps/app exec bun test tests/session-transcript-text.test.ts
+
+      - name: Check Electron bridge contract
+        run: pnpm --filter @openwork/desktop check:electron
+
+      - name: Test desktop session runner
+        run: pnpm --filter @openwork/desktop test:session-runner
+
+      - name: Typecheck Electron main process
+        run: pnpm --filter @openwork/desktop typecheck:electron
+
+      - name: Build Electron desktop
+        run: pnpm --filter @openwork/desktop build:electron
+
+      - name: Package Windows installer
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.yml --win --x64 --publish never
+
+      - name: Verify generated installer
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path "dist-electron" -Filter "*.exe" -Recurse | Select-Object -First 1
-          if ($installer) {
-            echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
-            Write-Host "Found installer at: $($installer.FullName)"
-          } else {
-            Write-Host "No installer found"
+          $installer = Get-ChildItem -Path "apps/desktop/dist-electron" -Filter "*.exe" -Recurse |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "Electron packaging completed without producing a Windows installer in apps/desktop/dist-electron."
           }
+          Write-Host "Found installer at: $($installer.FullName)"
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-enterprise-desktop-windows
+          path: apps/desktop/dist-electron/**
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: claude-enterprise-desktop-windows
+          path: apps/desktop/dist-electron
+
+      - name: Verify installer artifact
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="$(find apps/desktop/dist-electron -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$installer" || { echo "The Windows installer artifact is missing." >&2; exit 1; }
+          echo "installer_path=$installer" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release with Desktop Installer
-        if: steps.locate-installer.outputs.installer_path != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "Claude Enterprise Desktop Windows v1.0.${{ github.run_number }}"
+          tag_name: v1.0.${{ github.run_number }}.${{ github.run_attempt }}
+          name: "Claude Enterprise Desktop Windows v1.0.${{ github.run_number }}.${{ github.run_attempt }}"
           body: |
-            ## 💻 Claude Enterprise Desktop App Update (Windows)
-            
-            - **Build Number**: ${{ github.run_number }}
-            - **Commit**: ${{ github.sha }}
-            - Download and run the attached installer `.exe` below to upgrade your Desktop Workspace.
-          files: ${{ steps.locate-installer.outputs.installer_path }}
+            ## Claude Enterprise Desktop App Update (Windows)
+
+            - Build: ${{ github.run_number }}.${{ github.run_attempt }}
+            - Commit: ${{ github.sha }}
+            - Installer built by the Windows desktop packaging workflow.
+          files: ${{ steps.installer.outputs.installer_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

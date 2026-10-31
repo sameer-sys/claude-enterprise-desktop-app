@@ -31,6 +31,18 @@ test("V2 instructions do not claim Connect is available when disconnected", () =
     "OpenWork Connect is not connected for this request. Do not claim remote capabilities are available.");
 });
 
+test("V2 browser guidance completes multi-stage work through observe-act-verify", () => {
+  const instructions = buildOpenWorkV2Instructions(true);
+  assert.match(instructions.operatingInstructions, /Keep going across page transitions until the user's requested outcome is visibly complete/);
+  assert.match(instructions.operatingInstructions, /Never repeat a click, form submission, upload, purchase, message send/);
+  assert.match(instructions.browser, /real Chromium mouse input/);
+  assert.match(instructions.browser, /Repeat this observe → act → verify cycle across every page/);
+  assert.match(instructions.browser, /If the receipt reports navigation, still_loading/);
+  assert.match(instructions.browser, /If the page is visibly loaded but the observation returns no interactive controls/);
+  assert.match(instructions.browser, /browser_handoff or report the exact blocker/);
+  assert.match(instructions.operatingInstructions, /If the observation reports no interactive elements/);
+});
+
 test("configured instructions load workspace files the engine skips", async () => {
   const base = await mkdtemp(join(tmpdir(), "openwork-configured-instructions-"));
   try {
@@ -67,9 +79,10 @@ test("configured instructions never send local or secret files", async () => {
   try {
     execFileSync("git", ["init", "-q"], { cwd: workspace });
     await mkdir(join(workspace, "rules"));
-    await writeFile(join(workspace, ".gitignore"), "private.md\n");
+    await writeFile(join(workspace, ".gitignore"), "private.md\nrules/private.md\n");
     await writeFile(join(workspace, "CONTRIBUTING.md"), "shared rules");
     await writeFile(join(workspace, "private.md"), "ignored notes");
+    await writeFile(join(workspace, "rules", "private.md"), "nested ignored notes");
     await writeFile(join(workspace, ".env"), "TOKEN=secret");
     await writeFile(join(workspace, "deploy.env.md"), "TOKEN=secret");
     await writeFile(join(workspace, "credentials.json"), "{\"token\":\"secret\"}");
@@ -83,4 +96,15 @@ test("configured instructions never send local or secret files", async () => {
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+});
+
+
+test("V2 operating instructions require real tool use and evidence-based verification", () => {
+  const instructions = buildOpenWorkV2Instructions(true);
+  assert.match(instructions.operatingInstructions, /When a suitable tool is available, use it and carry the task through to a verified result/);
+  assert.match(instructions.operatingInstructions, /Tool descriptions and live discovery results are the source of truth/);
+  assert.match(instructions.operatingInstructions, /Use only tools exposed by this runtime or returned by a live discovery call/);
+  assert.match(instructions.operatingInstructions, /Prefer a focused feature branch and pull request/);
+  assert.match(instructions.operatingInstructions, /verify the observable outcome/);
+  assert.match(instructions.operatingInstructions, /Never describe a build pass as proof that every feature works/);
 });
