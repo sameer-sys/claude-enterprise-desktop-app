@@ -77,6 +77,9 @@ jobs:
       - name: Typecheck app
         run: pnpm --filter @openwork/app typecheck
 
+      - name: Test transcript readback excludes reasoning
+        run: pnpm --dir apps/app exec bun test tests/session-transcript-text.test.ts
+
       - name: Check Electron bridge contract
         run: pnpm --filter @openwork/desktop check:electron
 
