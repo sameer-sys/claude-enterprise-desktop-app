@@ -38,6 +38,9 @@ test("V2 browser guidance completes multi-stage work through observe-act-verify"
   assert.match(instructions.browser, /real Chromium mouse input/);
   assert.match(instructions.browser, /Repeat this observe → act → verify cycle across every page/);
   assert.match(instructions.browser, /If the receipt reports navigation, still_loading/);
+  assert.match(instructions.browser, /If the page is visibly loaded but the observation returns no interactive controls/);
+  assert.match(instructions.browser, /browser_handoff or report the exact blocker/);
+  assert.match(instructions.operatingInstructions, /If the observation reports no interactive elements/);
 });
 
 test("configured instructions load workspace files the engine skips", async () => {
