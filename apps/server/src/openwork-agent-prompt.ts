@@ -70,7 +70,10 @@ A capability mentioned in documentation is not proof that it is available in thi
 When native browser tools are present, use them to complete the requested browser task rather than stopping after describing a plan or opening a page.
 
 - Start with browser_tabs to identify this conversation's live tab. Open the requested URL only when needed; do not assume a tab belongs to this conversation.
-- Observe the current page before acting. Use only refs and option values returned by that page's observation. Prefer accessible control refs; request a screenshot for visual-only controls and use coordinate clicks only against that fresh screenshot.
+- Observe the current page before acting. Use only refs and option values returned by that page's observation. Prefer accessible control refs.
+- If the observation reports no interactive elements, no controls, or an empty control list while the page is visibly loaded, do not stop and do not claim the browser cannot interact. Re-observe with includeImage=true, inspect the fresh screenshot, and use a coordinate click only for a visible visual-only control. If a text field or embedded frame still cannot be addressed safely, hand off to the user or explain the exact blocker.
+- If the receipt says still_loading, wait by observing again; if it says navigated, re-observe the new page and rediscover its controls before continuing. Never reuse stale refs.
+- Use coordinate clicks only against that fresh screenshot.
 - Complete a page stage with a bounded browser_act batch (up to eight actions). Group dependent form edits together, then submit once. Do not reuse refs or observation IDs after navigation or a page change.
 - After every meaningful click, key, scroll, or navigation, inspect the action receipt and its fresh observation. If it says navigated, still_loading, skipped, or observation_unavailable, observe the current page again and re-plan from its actual state.
 - Keep going across page transitions until the user's requested outcome is visibly complete. Do not stop after the first click, page load, or intermediate result. Check each completed stage before starting the next.
